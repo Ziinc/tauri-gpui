@@ -1,0 +1,40 @@
+[package]
+name = "tauri-plugin-gpui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Render GPUI views inside ordinary Tauri windows"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ziinc/tauri-gpui"
+keywords = ["tauri", "tauri-plugin", "gpui", "gui"]
+categories = ["gui"]
+
+[workspace]
+members = [".", "examples/gpui-demo"]
+
+[features]
+default = []
+# iOS/Android support via gpui-mobile. Off by default so desktop-only
+# consumers never compile the mobile dependency graph.
+mobile = ["dep:gpui-mobile"]
+
+[dependencies]
+anyhow = "1"
+futures = "0.3"
+log = "0.4"
+raw-window-handle = "0.6"
+thiserror = "2"
+uuid = "1"
+tauri = { version = "2.12", features = ["unstable"] }
+tauri-runtime-wry = { version = "2.12", features = ["unstable"] }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "c3ab5564f83ef5ec2b49f9ed4c8544b33c16401b", default-features = false }
+gpui-mobile = { version = "0.1", optional = true }
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "c3ab5564f83ef5ec2b49f9ed4c8544b33c16401b" }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "c3ab5564f83ef5ec2b49f9ed4c8544b33c16401b", features = ["font-kit"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation"] }
