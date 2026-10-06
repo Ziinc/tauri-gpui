@@ -166,6 +166,18 @@ pub trait GpuiWindowExt {
     fn attach_gpui_with<F, V>(&self, options: GpuiOptions, root: F) -> Result<(), GpuiError>
     where
         F: FnOnce(&mut gpui::App) -> gpui::Entity<V> + 'static,
+        V: gpui::Render + 'static,
+    {
+        self.attach_gpui_view(options, move |_, cx| root(cx))
+    }
+
+    /// Like [`attach_gpui_with`](Self::attach_gpui_with), but the root
+    /// builder also receives the GPUI [`Window`](gpui::Window). Component
+    /// libraries need this to wrap content in their root view, e.g.
+    /// `|window, cx| cx.new(|cx| gpui_kit::base::Root::new(view, window, cx))`.
+    fn attach_gpui_view<F, V>(&self, options: GpuiOptions, root: F) -> Result<(), GpuiError>
+    where
+        F: FnOnce(&mut gpui::Window, &mut gpui::App) -> gpui::Entity<V> + 'static,
         V: gpui::Render + 'static;
 
     /// Whether GPUI is attached to this window.
@@ -173,9 +185,9 @@ pub trait GpuiWindowExt {
 }
 
 impl GpuiWindowExt for tauri::Window<Wry> {
-    fn attach_gpui_with<F, V>(&self, options: GpuiOptions, root: F) -> Result<(), GpuiError>
+    fn attach_gpui_view<F, V>(&self, options: GpuiOptions, root: F) -> Result<(), GpuiError>
     where
-        F: FnOnce(&mut gpui::App) -> gpui::Entity<V> + 'static,
+        F: FnOnce(&mut gpui::Window, &mut gpui::App) -> gpui::Entity<V> + 'static,
         V: gpui::Render + 'static,
     {
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
@@ -185,8 +197,7 @@ impl GpuiWindowExt for tauri::Window<Wry> {
                     self,
                     options,
                     Box::new(move |cx, window_options| {
-                        cx.open_window(window_options, move |_, cx| root(cx))
-                            .map(Into::into)
+                        cx.open_window(window_options, root).map(Into::into)
                     }),
                 )
             })

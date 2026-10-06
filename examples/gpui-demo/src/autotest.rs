@@ -14,18 +14,40 @@ use std::{
     time::Duration,
 };
 
+use gpui_kit::{App, AppContext as _};
 use tauri::{AppHandle, Manager, Wry};
-use tauri_plugin_gpui::{
-    GpuiWindowExt,
-    gpui::{App, AppContext as _},
-};
+use tauri_plugin_gpui::GpuiWindowExt;
 
-use crate::{Observed, ObservedState, Shared};
+use crate::{LIST_TOP, ROW_H, Store, Todo, TodoStore};
 
-/// Window-relative click targets; the demo views position these absolutely.
-pub const INCREMENT_BTN: (i32, i32) = (84, 372);
-pub const TOGGLE_BTN: (i32, i32) = (244, 372);
-pub const INSPECTOR_INCREMENT_BTN: (i32, i32) = (154, 222);
+// Window-relative click targets in the 560x560 main window (see the layout
+// constants in main.rs).
+const INPUT: (i32, i32) = (150, 90);
+const ADD_BTN: (i32, i32) = (500, 90);
+const THEME_BTN: (i32, i32) = (522, 40);
+const FILTER_ALL: (i32, i32) = (52, 522);
+const FILTER_ACTIVE: (i32, i32) = (132, 522);
+const SUMMARY_BTN: (i32, i32) = (454, 522);
+
+fn row_y(index: usize) -> i32 {
+    (LIST_TOP + ROW_H * index as f32 + ROW_H / 2.) as i32
+}
+fn checkbox(index: usize) -> (i32, i32) {
+    (38, row_y(index))
+}
+fn delete(index: usize) -> (i32, i32) {
+    (522, row_y(index))
+}
+
+#[derive(serde::Serialize, Clone)]
+struct Snapshot {
+    todos: Vec<Todo>,
+    visible: Vec<Todo>,
+    scroll_events: usize,
+    viewport: (f32, f32),
+    input: String,
+    dark: bool,
+}
 
 #[derive(serde::Serialize)]
 struct Check {
@@ -126,10 +148,49 @@ impl Scenario {
         self.on_main(move |_| tauri_plugin_gpui::with_app(f).map_err(|e| e.to_string()))?
     }
 
-    fn observed(&self) -> Result<(usize, Observed), String> {
+    fn snapshot(&self) -> Result<Snapshot, String> {
         self.gpui(|cx| {
-            let count = cx.global::<Shared>().0.read(cx).count;
-            (count, cx.global::<ObservedState>().0.read(cx).clone())
+            use gpui_kit::component::ActiveTheme;
+            let store: &TodoStore = cx.global::<Store>().0.read(cx);
+            let input = cx
+                .global::<crate::MainInput>()
+                .0
+                .read(cx)
+                .value()
+                .to_string();
+            Snapshot {
+                todos: store.todos.clone(),
+                visible: store.visible(),
+                scroll_events: store.scroll_events,
+                viewport: store.viewport,
+                input,
+                dark: cx.theme().mode.is_dark(),
+            }
+        })
+    }
+
+    fn titles(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .snapshot()?
+            .todos
+            .into_iter()
+            .map(|t| t.title)
+            .collect())
+    }
+
+    fn type_text(&self, title: &str, text: &str) -> Result<(), String> {
+        let xid = self.xid(title)?;
+        xdotool(&["windowfocus", "--sync", &xid]).ok();
+        xdotool(&["type", "--delay", "60", text])?;
+        sleep(300);
+        Ok(())
+    }
+
+    fn summary_attached(&self) -> Result<bool, String> {
+        self.on_main(|app| {
+            app.get_window("summary")
+                .map(|w| w.is_gpui_attached())
+                .unwrap_or(false)
         })
     }
 
@@ -194,6 +255,8 @@ impl Scenario {
     }
 
     fn run(&mut self) -> Result<(), String> {
+        const MAIN: &str = "Todos";
+        const SUMMARY: &str = "Todo summary";
         sleep(3000);
 
         let attached = self.on_main(|app| {
@@ -204,122 +267,152 @@ impl Scenario {
         self.check("GPUI attached to Tauri window `main`", attached, "");
         let webview = self.on_main(|app| app.get_webview_window("webview").is_some())?;
         self.check("WebView window coexists", webview, "");
-        self.shot("GPUI main", "01-main-initial")?;
+        self.shot(MAIN, "01-todos-initial")?;
         self.shot("WebView window", "01-webview-window")?;
 
-        // Pointer + mouse buttons.
-        for _ in 0..3 {
-            self.click("GPUI main", INCREMENT_BTN)?;
-        }
-        let (count, observed) = self.observed()?;
+        // Text input through gpui-kit's Input: click, type, Enter.
+        self.click(MAIN, INPUT)?;
+        self.type_text(MAIN, "Buy milk")?;
+        self.shot(MAIN, "02-typing")?;
+        xdotool(&["key", "Return"])?;
+        sleep(400);
+        let snap = self.snapshot()?;
+        let titles: Vec<_> = snap.todos.iter().map(|t| t.title.clone()).collect();
         self.check(
-            "mouse clicks reach GPUI",
-            count == 3,
-            format!("counter = {count}"),
-        );
-        let near = (observed.mouse.0 - INCREMENT_BTN.0 as f32).abs() <= 2.0
-            && (observed.mouse.1 - INCREMENT_BTN.1 as f32).abs() <= 2.0;
-        self.check(
-            "cursor movement reaches GPUI",
-            near,
-            format!("mouse = {:?}", observed.mouse),
+            "typing + Enter adds a to-do",
+            titles.last().map(String::as_str) == Some("Buy milk") && snap.input.is_empty(),
+            format!("todos = {titles:?}, input = {:?}", snap.input),
         );
 
-        // Keyboard.
-        let xid = self.xid("GPUI main")?;
-        xdotool(&["windowfocus", "--sync", &xid]).ok();
-        xdotool(&["type", "--delay", "80", "Hello GPUI"])?;
-        xdotool(&["key", "BackSpace"])?;
-        sleep(400);
-        let (_, observed) = self.observed()?;
+        // Typing then clicking the Add button.
+        self.click(MAIN, INPUT)?;
+        self.type_text(MAIN, "Ship tauri-plugin-gpui")?;
+        xdotool(&["key", "BackSpace", "BackSpace", "BackSpace", "BackSpace"])?;
+        self.type_text(MAIN, "GPUI!")?;
+        self.click(MAIN, ADD_BTN)?;
+        let titles = self.titles()?;
         self.check(
-            "keyboard input reaches GPUI",
-            observed.typed == "Hello GPU",
-            format!("typed = {:?}", observed.typed),
+            "Add button, backspace and shifted characters",
+            titles.last().map(String::as_str) == Some("Ship tauri-plugin-GPUI!"),
+            format!("todos = {titles:?}"),
         );
+
+        // Checkbox toggles and delete buttons.
+        self.click(MAIN, checkbox(1))?;
+        let snap = self.snapshot()?;
+        self.check(
+            "checkbox click toggles a to-do",
+            snap.todos.get(1).is_some_and(|t| t.done),
+            format!("{:?}", snap.todos.get(1)),
+        );
+        self.click(MAIN, delete(0))?;
+        let titles = self.titles()?;
+        self.check(
+            "delete button removes a to-do",
+            titles
+                == [
+                    "Attach GPUI to a Tauri window",
+                    "Buy milk",
+                    "Ship tauri-plugin-GPUI!",
+                ],
+            format!("todos = {titles:?}"),
+        );
+        self.shot(MAIN, "03-todos-edited")?;
+
+        // Filters.
+        self.click(MAIN, FILTER_ACTIVE)?;
+        let snap = self.snapshot()?;
+        self.check(
+            "Active filter hides completed to-dos",
+            snap.visible.len() == 2 && snap.visible.iter().all(|t| !t.done),
+            format!(
+                "visible = {:?}",
+                snap.visible.iter().map(|t| &t.title).collect::<Vec<_>>()
+            ),
+        );
+        self.shot(MAIN, "04-filter-active")?;
+        self.click(MAIN, FILTER_ALL)?;
 
         // Scroll wheel.
-        xdotool(&["mousemove", "--window", &xid, "300", "200"])?;
+        let xid = self.xid(MAIN)?;
+        xdotool(&["mousemove", "--window", &xid, "280", "300"])?;
         for _ in 0..3 {
             xdotool(&["click", "5"])?;
             sleep(80);
         }
         sleep(300);
-        let (_, observed) = self.observed()?;
+        let snap = self.snapshot()?;
         self.check(
             "scroll wheel reaches GPUI",
-            observed.scroll_events >= 3,
-            format!("scroll events = {}", observed.scroll_events),
+            snap.scroll_events >= 3,
+            format!("scroll events = {}", snap.scroll_events),
         );
-        self.shot("GPUI main", "02-main-after-input")?;
+
+        // Theme toggle (gpui-kit theme change re-renders every window).
+        self.click(MAIN, THEME_BTN)?;
+        let snap = self.snapshot()?;
+        self.check("theme toggle switches to dark", snap.dark, "");
+        self.shot(MAIN, "05-todos-dark")?;
+
+        // Second GPUI window created from inside a GPUI click handler.
+        self.click(MAIN, SUMMARY_BTN)?;
+        sleep(1500);
+        let attached = self.summary_attached()?;
+        self.check(
+            "summary window attached to the shared GPUI App",
+            attached,
+            "",
+        );
+        self.shot(SUMMARY, "06-summary")?;
+
+        // Shared state: a change in `main` shows up in `summary`.
+        self.click(MAIN, checkbox(1))?;
+        let snap = self.snapshot()?;
+        let done = snap.todos.iter().filter(|t| t.done).count();
+        self.check(
+            "state shared between GPUI windows",
+            done == 2,
+            format!("done = {done}"),
+        );
+        self.shot(SUMMARY, "07-summary-updated")?;
+
+        // Close and recreate without restarting the GPUI App.
+        self.click(MAIN, SUMMARY_BTN)?;
+        sleep(1500);
+        let closed = self.on_main(|app| app.get_window("summary").is_none())?;
+        self.check("GPUI-backed window closes through Tauri", closed, "");
+        self.click(MAIN, SUMMARY_BTN)?;
+        sleep(1500);
+        let reopened = self.summary_attached()?;
+        let titles = self.titles()?;
+        self.check(
+            "GPUI window recreated on the same GPUI App",
+            reopened && titles.len() == 3,
+            format!("reopened = {reopened}, todos = {}", titles.len()),
+        );
+        self.shot(SUMMARY, "08-summary-reopened")?;
 
         // Resize through Tauri; GPUI must re-layout and redraw.
         self.on_main(|app| {
             app.get_window("main")
                 .unwrap()
-                .set_size(tauri::LogicalSize::new(820.0, 520.0))
+                .set_size(tauri::LogicalSize::new(720.0, 640.0))
         })?
         .map_err(|e| e.to_string())?;
         sleep(1000);
-        let (_, observed) = self.observed()?;
+        let snap = self.snapshot()?;
         self.check(
             "resize reaches GPUI",
-            observed.viewport == (820.0, 520.0),
-            format!("viewport = {:?}", observed.viewport),
+            snap.viewport == (720.0, 640.0),
+            format!("viewport = {:?}", snap.viewport),
         );
-        self.shot("GPUI main", "03-main-resized")?;
-
-        // Second GPUI window created from inside a GPUI click handler.
-        self.click("GPUI main", TOGGLE_BTN)?;
-        sleep(1500);
-        let inspector = self.on_main(|app| {
-            app.get_window("inspector")
-                .map(|w| w.is_gpui_attached())
-                .unwrap_or(false)
-        })?;
-        self.check(
-            "second Tauri window attached to the shared GPUI App",
-            inspector,
-            "",
-        );
-        self.shot("GPUI inspector", "04-inspector")?;
-
-        self.click("GPUI inspector", INSPECTOR_INCREMENT_BTN)?;
-        let (count, _) = self.observed()?;
-        self.check(
-            "state shared between GPUI windows",
-            count == 4,
-            format!("counter = {count}"),
-        );
-        self.shot("GPUI main", "05-main-after-inspector-click")?;
-
-        // Close and recreate without restarting the GPUI App.
-        self.click("GPUI main", TOGGLE_BTN)?;
-        sleep(1500);
-        let closed = self.on_main(|app| app.get_window("inspector").is_none())?;
-        self.check("GPUI-backed window closes through Tauri", closed, "");
-        self.click("GPUI main", TOGGLE_BTN)?;
-        sleep(1500);
-        let reopened = self.on_main(|app| {
-            app.get_window("inspector")
-                .map(|w| w.is_gpui_attached())
-                .unwrap_or(false)
-        })?;
-        let (count, _) = self.observed()?;
-        self.check(
-            "GPUI window recreated on the same GPUI App",
-            reopened && count == 4,
-            format!("reopened = {reopened}, counter = {count}"),
-        );
-        self.shot("GPUI inspector", "06-inspector-reopened")?;
+        self.shot(MAIN, "09-todos-resized")?;
 
         // `cx.open_window` must fail clearly: GPUI cannot create native windows.
         let open_window_error = self.gpui(|cx| {
-            cx.open_window(Default::default(), |_, cx| {
-                cx.new(|_| crate::Observed::default())
-            })
-            .err()
-            .map(|e| e.to_string())
+            cx.open_window(Default::default(), |_, cx| cx.new(|_| crate::Blank))
+                .err()
+                .map(|e| e.to_string())
         })?;
         self.check(
             "GPUI open_window is rejected",
@@ -329,7 +422,7 @@ impl Scenario {
             format!("{open_window_error:?}"),
         );
 
-        self.monitor_shot("07-desktop")?;
+        self.monitor_shot("10-desktop")?;
         Ok(())
     }
 }

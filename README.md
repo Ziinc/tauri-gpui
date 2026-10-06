@@ -4,9 +4,9 @@ Render [GPUI](https://www.gpui.rs) views inside ordinary Tauri windows, with no 
 
 Tauri/TAO keeps ownership of the application lifecycle, the event loop and native windows. The plugin permanently attaches GPUI as the content renderer of an existing Tauri window. Every attached window shares one GPUI `App` that runs on Tauri's event-loop thread. GPUI-backed windows and ordinary WebView windows can run side by side in the same app. See [`PRD.md`](PRD.md) for the design.
 
-![Two GPUI-backed Tauri windows and a WebView window](docs/demo.png)
+![A gpui-kit to-do app in two GPUI-backed Tauri windows, next to a WebView window](docs/demo.png)
 
-*Taken by `tauri-plugin-screenshots` during the automated demo run: `GPUI main` and `GPUI inspector` are Tauri windows rendered by GPUI and share a counter entity; `WebView window` is a normal Tauri/Wry window.*
+*Taken by `tauri-plugin-screenshots` during the automated demo run. `Todos` and `Todo summary` are Tauri windows rendered by GPUI with [gpui-kit](https://crates.io/crates/gpui-kit) components, sharing one to-do store; `WebView window` is a normal Tauri/Wry window.*
 
 ## Usage
 
@@ -43,6 +43,7 @@ fn main() {
 
 - `tauri_plugin_gpui::init(app)` / `init_with(app, GpuiConfig)` is called from `setup` instead of going through `Builder::plugin`. The plugin needs raw TAO events, and Tauri only exposes those through `App::wry_plugin`. `GpuiConfig` lets you set a fallback font, a GPUI `AssetSource` and an `on_launch(|cx| …)` hook for app-level GPUI setup (globals, key bindings, fonts).
 - `window.attach_gpui(|cx| …)` / `attach_gpui_with(GpuiOptions, …)` is a one-way call for the life of the window. A second call returns `GpuiError::AlreadyAttached`. A window that hosts a WebView returns `GpuiError::NotEligible`. You can call it from inside GPUI code, such as a click handler that builds a new Tauri window; the mount then finishes as soon as the current GPUI update returns.
+- `attach_gpui_view(GpuiOptions, |window, cx| …)` also passes the GPUI `Window` to the root builder. Component libraries need it to wrap content in their root view, for example gpui-kit's `base::Root::new(view, window, cx)`.
 - `tauri_plugin_gpui::with_app(|cx| …)` gives main-thread code outside GPUI access to the shared `App`. It returns `GpuiError::Reentrant` instead of panicking when the `App` is already borrowed.
 - To open more windows, use Tauri: build the window with `tauri::WindowBuilder`, then call `attach_gpui`. GPUI's `cx.open_window(…)` returns `unsupported operation: open_window …`.
 - When a Tauri window is destroyed, its GPUI root, renderer and surface are destroyed with it. If GPUI removes a window itself (`window.remove_window()`), the plugin asks Tauri to close the native window. Closing the last GPUI window leaves the shared `App` running, and a later window can attach to it again.
@@ -70,7 +71,9 @@ Keystrokes follow GPUI naming (`enter`, `left`, `f5`, lowercase characters). `ke
 
 ## Minimal platform adapter: Phase 0 findings
 
-The spike's central question was whether GPUI can render into an existing Tauri/TAO window without forking either project. The answer is yes, pinned to zed [`c3ab5564`](https://github.com/zed-industries/zed/commit/c3ab5564f83ef5ec2b49f9ed4c8544b33c16401b). That revision's `gpui` exposes `Platform`, `PlatformWindow`, `PlatformDispatcher`, `Application::with_platform` and `Application::run_embedded`, and `gpui_wgpu` exposes a renderer that accepts raw window handles. The crates.io `gpui` 0.2.x keeps `Platform` crate-private, so a git dependency is required for now.
+The spike's central question was whether GPUI can render into an existing Tauri/TAO window without forking either project. The answer is yes. The plugin builds on [`gpui-pre`](https://crates.io/crates/gpui-pre) 0.3.8 and `gpui-pre-wgpu`, crates.io snapshots of zed's GPUI and the same crates gpui-kit and gpui-component use, renamed to `gpui`/`gpui_wgpu` in `Cargo.toml`. That GPUI exposes `Platform`, `PlatformWindow`, `PlatformDispatcher`, `Application::with_platform` and `Application::run_embedded`, and `gpui-pre-wgpu` exposes a renderer that accepts raw window handles. The crates.io `gpui` 0.2.x keeps `Platform` crate-private, so it cannot be used.
+
+The pin is exact (`=0.3.8`), because every crate in a GPUI app must share one GPUI version. If you use gpui-kit, use a release built on the same `gpui-pre` (gpui-kit 0.7.1 is).
 
 What GPUI needs for rendering and interaction:
 
@@ -97,10 +100,10 @@ Everything else does one of three things:
 
 ## Example and screenshot testing
 
-[`examples/gpui-demo`](examples/gpui-demo) is the PRD's sample application. It contains:
+[`examples/gpui-demo`](examples/gpui-demo) is the PRD's sample application: a to-do list built with [gpui-kit](https://crates.io/crates/gpui-kit) components (Input, Checkbox, Button, Progress, light/dark theme). It contains:
 
-- a GPUI-backed `main` window (shared counter, typed text, mouse, scroll and viewport readouts);
-- an `inspector` window that is created, closed and recreated from a GPUI click handler;
+- a GPUI-backed `main` window with the to-do list: add, check off, delete and filter, plus a theme toggle;
+- a `summary` window that a GPUI click handler creates, closes and recreates. It shows live stats from the same store;
 - an ordinary WebView window.
 
 ```sh
@@ -117,7 +120,7 @@ With `GPUI_DEMO_AUTOTEST=<dir>` set, the demo:
 
 ## Remaining open questions
 
-- How far GPUI versioning goes beyond pinning a zed revision, and whether to publish the crate before upstream releases a `gpui` with a public `Platform`.
+- GPUI versioning: the crate tracks the `gpui-pre` snapshots, the same ones gpui-kit tracks, until upstream publishes a `gpui` with a public `Platform`.
 - Clipboard and IME positioning. Neither has a Tauri core API: clipboard is available through `tauri-plugin-clipboard-manager`, and IME positioning would need a TAO change.
 - Accessibility (AccessKit through Tauri windows).
 - Building and testing on macOS and Windows.

@@ -27,14 +27,16 @@ thiserror = "2"
 uuid = "1"
 tauri = { version = "2.12", features = ["unstable"] }
 tauri-runtime-wry = { version = "2.12", features = ["unstable"] }
-gpui = { git = "https://github.com/zed-industries/zed", rev = "c3ab5564f83ef5ec2b49f9ed4c8544b33c16401b", default-features = false }
+# GPUI from crates.io: `gpui-pre` is a published snapshot of zed's gpui (the
+# same crates gpui-kit / gpui-component build on). Renamed so code says `gpui`.
+gpui = { package = "gpui-pre", version = "=0.3.8", default-features = false }
 gpui-mobile = { version = "0.1", optional = true }
 
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
-gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "c3ab5564f83ef5ec2b49f9ed4c8544b33c16401b" }
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "c3ab5564f83ef5ec2b49f9ed4c8544b33c16401b", features = ["font-kit"] }
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8", features = ["font-kit"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation"] }
