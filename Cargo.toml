@@ -16,6 +16,7 @@ categories = ["gui"]
 [workspace]
 # The demo is its own workspace so gpui-kit (a demo-only dependency) never
 # enters this crate's lockfile or `--workspace` builds.
+members = [".", "examples/basic"]
 exclude = ["examples/gpui-demo"]
 
 [features]
