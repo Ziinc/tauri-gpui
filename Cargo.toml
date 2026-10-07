@@ -33,7 +33,8 @@ gpui = { package = "gpui-pre", version = "=0.3.8", default-features = false }
 gpui-mobile = { version = "0.1", optional = true }
 
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
-arboard = { version = "3", default-features = false }
+arboard = { version = "3", default-features = false, features = ["image-data"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico", "pnm"] }
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]

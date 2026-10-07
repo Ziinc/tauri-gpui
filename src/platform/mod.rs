@@ -382,21 +382,21 @@ impl Platform for TauriPlatform {
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
-        self.clipboard.read()
+        self.clipboard.read(clipboard::Kind::Clipboard)
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {
-        self.clipboard.write(item);
+        self.clipboard.write(clipboard::Kind::Clipboard, item);
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn read_from_primary(&self) -> Option<ClipboardItem> {
-        self.clipboard.read_primary()
+        self.clipboard.read(clipboard::Kind::Primary)
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn write_to_primary(&self, item: ClipboardItem) {
-        self.clipboard.write_primary(item);
+        self.clipboard.write(clipboard::Kind::Primary, item);
     }
 
     #[cfg(target_os = "macos")]
