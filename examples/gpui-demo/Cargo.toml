@@ -14,3 +14,6 @@ gpui-kit = "0.7.1"
 tauri-plugin-screenshots = "2.2"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+gpui-kit = { version = "0.7.1", features = ["test-support"] }
