@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+# Standalone: gpui-kit stays out of the plugin's workspace and lockfile.
+[workspace]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

@@ -125,10 +125,10 @@ Run the demo with `cargo run -p gpui-demo`.
 - a `summary` window that a GPUI click handler creates, closes and recreates. It shows live stats from the same store;
 - an ordinary WebView window.
 
-Headless UI tests follow the [gpui-kit testing guide](https://gpui-kit.com/docs/test/): the demo's views render in gpui-kit test windows (no Tauri, no display server), clicks and keystrokes go through GPUI's event dispatch, and assertions read element state (`checked`, `value`, `focused`, `bounds`, labels) and the shared store. They live in [`src/tests.rs`](examples/gpui-demo/src/tests.rs) and use gpui-kit's `test-support` feature as a dev-dependency.
+Headless UI tests follow the [gpui-kit testing guide](https://gpui-kit.com/docs/test/): the demo's views render in gpui-kit test windows (no Tauri, no display server), clicks and keystrokes go through GPUI's event dispatch, and assertions read element state (`checked`, `value`, `focused`, `bounds`, labels) and the shared store. They live in [`src/tests.rs`](examples/gpui-demo/src/tests.rs) and use gpui-kit's `test-support` feature as a dev-dependency. The demo is a standalone Cargo workspace, so gpui-kit is never a dependency of the plugin itself.
 
 ```sh
-cargo test -p gpui-demo
+cargo test --manifest-path examples/gpui-demo/Cargo.toml
 ```
 
 The screenshot test below drives the real Tauri app end to end:

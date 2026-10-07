@@ -176,7 +176,7 @@ pub trait GpuiWindowExt {
     /// Like [`attach_gpui_with`](Self::attach_gpui_with), but the root
     /// builder also receives the GPUI [`Window`](gpui::Window). Component
     /// libraries need this to wrap content in their root view, e.g.
-    /// `|window, cx| cx.new(|cx| gpui_kit::base::Root::new(view, window, cx))`.
+    /// `|window, cx| cx.new(|cx| Root::new(view, window, cx))`.
     fn attach_gpui_view<F, V>(&self, options: GpuiOptions, root: F) -> Result<(), GpuiError>
     where
         F: FnOnce(&mut gpui::Window, &mut gpui::App) -> gpui::Entity<V> + 'static,
