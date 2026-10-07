@@ -4,17 +4,30 @@ Render [GPUI](https://www.gpui.rs) views inside ordinary Tauri windows, with no 
 
 Tauri/TAO keeps ownership of the application lifecycle, the event loop and native windows. The plugin permanently attaches GPUI as the content renderer of an existing Tauri window. Every attached window shares one GPUI `App` that runs on Tauri's event-loop thread. GPUI-backed windows and ordinary WebView windows can run side by side in the same app. See [`PRD.md`](PRD.md) for the design.
 
-![A gpui-kit to-do app in two GPUI-backed Tauri windows, next to a WebView window](docs/demo.png)
+![A gpui-kit to-do app in two GPUI-backed Tauri windows, next to a WebView window](https://raw.githubusercontent.com/ziinc/tauri-gpui/main/docs/demo.png)
 
 *Taken by `tauri-plugin-screenshots` during the automated demo run. `Todos` and `Todo summary` are Tauri windows rendered by GPUI with [gpui-kit](https://crates.io/crates/gpui-kit) components, sharing one to-do store; `WebView window` is a normal Tauri/Wry window.*
 
-## Usage
+## Features
+
+- **No WebView:** GPUI renders straight into native Tauri windows via wgpu (Vulkan/GL, Metal, DX12).
+- **Tauri stays in charge:** lifecycle, event loop and windows remain Tauri/TAO's; GPUI never runs its own loop.
+- **Mix and match:** GPUI-backed windows and ordinary WebView windows run side by side in one app.
+- **One shared `App`:** every attached window shares a single GPUI `App`, so entities, globals and state are shared.
+- **Component libraries work:** [gpui-kit](https://crates.io/crates/gpui-kit) / gpui-component via `attach_gpui_view`.
+- **Full input:** mouse, wheel, keyboard with repeat, modifiers, IME commit text, focus, resize and scale-factor changes.
+- **Demand-driven redraw:** an idle app uses 0% CPU.
+- **Clean teardown:** destroying a Tauri window tears down its GPUI root, renderer and surface.
+
+## Quickstart
 
 ```toml
 [dependencies]
 tauri = { version = "2.12", features = ["unstable"] } # `unstable` enables tauri::WindowBuilder
-tauri-plugin-gpui = { git = "https://github.com/ziinc/tauri-gpui" }
+tauri-plugin-gpui = "0.1"
 ```
+
+Requires Rust 1.88+. On Linux, install the usual [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) plus a Vulkan driver.
 
 ```rust
 use tauri_plugin_gpui::{GpuiWindowExt, gpui::{self, prelude::*}};
@@ -99,6 +112,8 @@ Everything else does one of three things:
 | iOS, Android (`mobile` feature) | The `mobile` feature pulls in `gpui-mobile` and is off by default, so desktop builds never compile it. The published `gpui-mobile` 0.1 does not yet include its `Platform` implementations, so `init`/`attach_gpui` return `UnsupportedOperation` on mobile targets. The public API is the same as on desktop. |
 
 ## Example and screenshot testing
+
+Run the demo with `cargo run -p gpui-demo`.
 
 [`examples/gpui-demo`](examples/gpui-demo) is the PRD's sample application: a to-do list built with [gpui-kit](https://crates.io/crates/gpui-kit) components (Input, Checkbox, Button, Progress, light/dark theme). It contains:
 
