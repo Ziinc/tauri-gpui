@@ -58,6 +58,7 @@ pub struct GpuiConfig {
 }
 
 impl GpuiConfig {
+    /// Creates a config with default settings.
     pub fn new() -> Self {
         Self::default()
     }
@@ -97,6 +98,7 @@ impl Default for GpuiOptions {
 }
 
 impl GpuiOptions {
+    /// Sets whether the window takes focus once GPUI is attached (default `true`).
     pub fn focus(mut self, focus: bool) -> Self {
         self.focus = focus;
         self
