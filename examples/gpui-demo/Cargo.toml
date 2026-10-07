@@ -1,0 +1,16 @@
+[package]
+name = "gpui-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = ["unstable"] }
+tauri-plugin-gpui = { path = "../.." }
+gpui-kit = "0.7.1"
+tauri-plugin-screenshots = "2.2"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
