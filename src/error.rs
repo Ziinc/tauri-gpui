@@ -12,11 +12,19 @@ pub enum GpuiError {
 
     /// GPUI is already attached to this window. Attachment is permanent.
     #[error("GPUI is already attached to window `{label}`")]
-    AlreadyAttached { label: String },
+    AlreadyAttached {
+        /// Label of the Tauri window.
+        label: String,
+    },
 
     /// The window cannot host a GPUI surface (for example it already hosts a WebView).
     #[error("window `{label}` is not eligible for GPUI attachment: {reason}")]
-    NotEligible { label: String, reason: &'static str },
+    NotEligible {
+        /// Label of the Tauri window.
+        label: String,
+        /// Why the window cannot be attached.
+        reason: &'static str,
+    },
 
     /// The call must happen on the Tauri/TAO event-loop thread.
     #[error("must be called on the Tauri event-loop (main) thread")]
@@ -28,7 +36,10 @@ pub enum GpuiError {
 
     /// The operation is outside the minimal GPUI platform adapter.
     #[error("unsupported operation: {operation}")]
-    UnsupportedOperation { operation: &'static str },
+    UnsupportedOperation {
+        /// Name of the unsupported operation.
+        operation: &'static str,
+    },
 
     /// The GPUI platform adapter could not be created.
     #[error("GPUI platform initialization failed: {0}")]
