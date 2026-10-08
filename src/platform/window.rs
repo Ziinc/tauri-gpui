@@ -208,6 +208,16 @@ impl WindowInner {
         click.count
     }
 
+    /// Re-reads window modes TAO reports no dedicated event for. Maximizing
+    /// or entering fullscreen always resizes, so this runs on resize/move.
+    pub fn sync_window_mode(&self) {
+        let maximized = self.tauri_window.is_maximized().unwrap_or(false);
+        let fullscreen = self.tauri_window.is_fullscreen().unwrap_or(false);
+        let mut state = self.state.borrow_mut();
+        state.maximized = maximized;
+        state.fullscreen = fullscreen;
+    }
+
     pub fn resized(&self, physical: Size<DevicePixels>, scale_factor: f32) {
         {
             let mut state = self.state.borrow_mut();
