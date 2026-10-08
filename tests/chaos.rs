@@ -800,7 +800,8 @@ fn window_state(h: &mut Harness) {
     h.window_gone(&label);
 }
 
-/// Close vetoes from Tauri's `prevent_close`, and `destroy` bypassing them.
+/// Close vetoes from both sides: Tauri's `prevent_close` and GPUI's
+/// `on_window_should_close`.
 fn close_vetoes(h: &mut Harness) {
     // Tauri on_window_event prevent_close keeps the GPUI surface alive.
     let label = h.open_probe("tauri-veto", (300., 200.));
@@ -838,6 +839,45 @@ fn close_vetoes(h: &mut Harness) {
     h.destroy(&label);
     let gone = h.window_gone(&label);
     h.check("destroy bypasses the Tauri close veto", gone, "");
+
+    // GPUI on_window_should_close returning false must keep the window.
+    let label = h.open_probe("gpui-veto", (300., 200.));
+    h.rendered(&label);
+    let asked = Arc::new(AtomicUsize::new(0));
+    let l = label.clone();
+    let a = asked.clone();
+    h.gpui(move |cx| {
+        with_gpui_window(cx, &l, |window, cx| {
+            window.on_window_should_close(cx, move |_, _| {
+                a.fetch_add(1, Ordering::SeqCst);
+                false
+            })
+        })
+    });
+    h.close(&label);
+    let consulted = h.wait(Duration::from_secs(3), |_| asked.load(Ordering::SeqCst) > 0);
+    thread::sleep(Duration::from_millis(300));
+    let l = label.clone();
+    let kept = h.main(move |app| app.get_window(&l).is_some_and(|w| w.is_gpui_attached()));
+    h.check(
+        "GPUI on_window_should_close can veto a Tauri close",
+        consulted && kept,
+        format!("consulted {consulted}, kept {kept}"),
+    );
+    // Allowing the close afterwards works.
+    let l = label.clone();
+    h.gpui(move |cx| {
+        with_gpui_window(cx, &l, |window, cx| {
+            window.on_window_should_close(cx, |_, _| true)
+        })
+    });
+    h.close(&label);
+    let gone = h.window_gone(&label);
+    h.check(
+        "GPUI should_close returning true lets the close proceed",
+        gone,
+        "",
+    );
 }
 
 /// Tauri facilities used from GPUI code and vice versa.
