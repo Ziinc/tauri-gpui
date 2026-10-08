@@ -46,3 +46,13 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8", features = ["font-k
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation"] }
+
+[dev-dependencies]
+tauri = { version = "2.12", features = ["unstable", "test"] }
+tauri-plugin-clipboard-manager = "2"
+
+# Chaos/integration suite: drives a real Tauri event loop, which must own the
+# main thread, so it uses its own harness. Skips without a display.
+[[test]]
+name = "chaos"
+harness = false

@@ -134,6 +134,26 @@ With `GPUI_DEMO_AUTOTEST=<dir>` set, the demo:
 3. captures every window with [`tauri-plugin-screenshots`](https://crates.io/crates/tauri-plugin-screenshots);
 4. writes `report.json` and exits non-zero if any check fails.
 
+## Chaos and integration tests
+
+[`tests/chaos.rs`](tests/chaos.rs) runs a real Tauri (Wry) event loop with `tauri-plugin-clipboard-manager` installed and hammers the plugin from a driver thread, asserting on what GPUI and Tauri observe:
+
+- API contract: `NotInitialized`, `AlreadyInitialized`, `NotMainThread`, `AlreadyAttached`, `NotEligible` (WebView windows), `Reentrant`, and `open_window` rejection;
+- randomized create/attach/close/destroy/`remove_window` storms, attach-then-teardown in one turn, 10 concurrent windows torn down at once, label reuse; every GPUI root must be released;
+- resize storms, hide/show cycles, and window state in both directions (title, maximize, fullscreen, focus, minimize, position, theme);
+- close handling (Tauri `prevent_close`, `destroy`) and `cx.quit()` routed through Tauri's `ExitRequested`;
+- Tauri events, managed state, `on_window_event`, `async_runtime` and `run_on_main_thread` used together with GPUI; GPUI timers, background tasks and floods of 20k foreground tasks;
+- the clipboard shared with `tauri-plugin-clipboard-manager`;
+- 600 cross-thread calls while windows churn, and random real X11 keyboard/mouse input via `xdotool` (typed text must arrive exactly once).
+
+```sh
+# needs: Xvfb, openbox, xdotool, a Vulkan driver; prints its seed
+scripts/chaos-test.sh
+CHAOS_SEED=42 CHAOS_ONLY=lifecycle_storm,clipboard scripts/chaos-test.sh
+```
+
+Without a display, `cargo test` skips the suite.
+
 ## Remaining open questions
 
 - GPUI versioning: the crate tracks the `gpui-pre` snapshots, the same ones gpui-kit tracks, until upstream publishes a `gpui` with a public `Platform`.
