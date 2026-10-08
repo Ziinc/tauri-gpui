@@ -59,7 +59,7 @@ fn main() {
 - `attach_gpui_view(GpuiOptions, |window, cx| …)` also passes the GPUI `Window` to the root builder. Component libraries need it to wrap content in their root view, for example gpui-kit's `base::Root::new(view, window, cx)`.
 - `tauri_plugin_gpui::with_app(|cx| …)` gives main-thread code outside GPUI access to the shared `App`. It returns `GpuiError::Reentrant` instead of panicking when the `App` is already borrowed.
 - To open more windows, use Tauri: build the window with `tauri::WindowBuilder`, then call `attach_gpui`. GPUI's `cx.open_window(…)` returns `unsupported operation: open_window …`.
-- When a Tauri window is destroyed, its GPUI root, renderer and surface are destroyed with it. If GPUI removes a window itself (`window.remove_window()`), the plugin asks Tauri to close the native window. Closing the last GPUI window leaves the shared `App` running, and a later window can attach to it again.
+- When a Tauri window is destroyed, its GPUI root, renderer and surface are destroyed with it. If GPUI removes a window itself (`window.remove_window()`), the plugin asks Tauri to destroy the native window (not `close`, so a Tauri `prevent_close` handler cannot leave a blank window behind). Closing the last GPUI window leaves the shared `App` running, and a later window can attach to it again.
 - Close requests (the window manager's close button or `tauri::Window::close()`) consult GPUI's `window.on_window_should_close(…)` first; returning `false` cancels the close before Tauri sees it. Otherwise Tauri's own `CloseRequested`/`prevent_close` flow runs as usual. `destroy()` bypasses both.
 
 ## How it works
