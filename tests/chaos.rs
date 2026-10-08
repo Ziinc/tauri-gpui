@@ -285,6 +285,16 @@ struct Harness {
 /// runtime existed.
 static PRE_INIT: Mutex<Vec<(String, bool, String)>> = Mutex::new(Vec::new());
 
+static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Seconds since the suite started, for timing slow CI runners.
+fn elapsed() -> f32 {
+    START.get_or_init(Instant::now).elapsed().as_secs_f32()
+}
+
+/// Main-thread round trips slower than this are reported with their caller.
+const SLOW_CALL: Duration = Duration::from_secs(1);
+
 impl Harness {
     fn check(&mut self, name: impl Into<String>, passed: bool, detail: impl Into<String>) {
         let check = Check {
@@ -294,7 +304,8 @@ impl Harness {
             detail: detail.into(),
         };
         println!(
-            "  [{}] {}: {}{}",
+            "  [{:6.1}s] [{}] {}: {}{}",
+            elapsed(),
             if check.passed { "PASS" } else { "FAIL" },
             check.scenario,
             check.name,
@@ -308,7 +319,10 @@ impl Harness {
     }
 
     /// Runs `f` on the Tauri main thread and waits for the result.
+    #[track_caller]
     fn main<R: Send + 'static>(&self, f: impl FnOnce(&AppHandle<Wry>) -> R + Send + 'static) -> R {
+        let caller = std::panic::Location::caller();
+        let start = Instant::now();
         let (tx, rx) = mpsc::channel();
         let app = self.app.clone();
         self.app
@@ -316,11 +330,21 @@ impl Harness {
                 let _ = tx.send(f(&app));
             })
             .expect("run_on_main_thread");
-        rx.recv_timeout(Duration::from_secs(20))
-            .expect("main thread stopped responding")
+        let result = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("main thread stopped responding");
+        if start.elapsed() > SLOW_CALL {
+            println!(
+                "  [{:6.1}s] slow main-thread call ({:.1}s) at {caller}",
+                elapsed(),
+                start.elapsed().as_secs_f32()
+            );
+        }
+        result
     }
 
     /// Runs `f` with the shared GPUI App on the main thread.
+    #[track_caller]
     fn gpui<R: Send + 'static>(&self, f: impl FnOnce(&mut App) -> R + Send + 'static) -> R {
         self.main(move |_| tauri_plugin_gpui::with_app(f).expect("with_app"))
     }
@@ -375,6 +399,7 @@ impl Harness {
         format!("{prefix}-{}", self.next_label)
     }
 
+    #[track_caller]
     fn create_window(&mut self, label: &str, size: (f64, f64)) -> tauri::Window<Wry> {
         let label = label.to_string();
         let (x, y) = (self.rng.range(0..400) as f64, self.rng.range(0..300) as f64);
@@ -388,6 +413,7 @@ impl Harness {
         })
     }
 
+    #[track_caller]
     fn open_probe(&mut self, prefix: &str, size: (f64, f64)) -> String {
         let label = self.label(prefix);
         let window = self.create_window(&label, size);
@@ -1542,10 +1568,15 @@ fn main() {
         });
     println!("chaos: CHAOS_SEED={seed}");
 
+    elapsed();
     // Watchdog: a hung event loop is a failure, not a stuck CI job.
-    thread::spawn(|| {
-        thread::sleep(Duration::from_secs(300));
-        eprintln!("chaos: timed out");
+    let timeout = std::env::var("CHAOS_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(600);
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(timeout));
+        eprintln!("chaos: timed out after {timeout}s (CHAOS_TIMEOUT_SECS)");
         std::process::exit(2);
     });
 
@@ -1563,10 +1594,16 @@ fn main() {
             ));
 
             let handle = app.handle().clone();
+            let start = Instant::now();
             tauri_plugin_gpui::init_with(
                 app,
                 GpuiConfig::new().on_launch(move |cx| cx.set_global(TauriHandle(handle))),
             )?;
+            println!(
+                "chaos: [{:6.1}s] GPUI runtime initialized in {:.1}s",
+                elapsed(),
+                start.elapsed().as_secs_f32()
+            );
             let again = tauri_plugin_gpui::init(app).err();
             pre.push((
                 "second init fails with AlreadyInitialized".into(),
@@ -1635,7 +1672,7 @@ fn run(app: AppHandle<Wry>, seed: u64) {
         {
             continue;
         }
-        println!("chaos: {name}");
+        println!("chaos: [{:6.1}s] {name}", elapsed());
         h.scenario = name;
         scenario(&mut h);
     }
