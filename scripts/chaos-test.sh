@@ -24,4 +24,5 @@ WM_PID=$!
 sleep 1
 
 export RUST_LOG="${RUST_LOG:-warn}"
-timeout 400 cargo test --manifest-path "$ROOT/Cargo.toml" --test chaos
+# The suite's own watchdog (CHAOS_TIMEOUT_SECS, default 600) fires first.
+timeout $(( ${CHAOS_TIMEOUT_SECS:-600} + 60 )) cargo test --manifest-path "$ROOT/Cargo.toml" --test chaos
