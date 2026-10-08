@@ -754,6 +754,32 @@ fn window_state(h: &mut Harness) {
         return;
     }
 
+    // Tauri → GPUI: maximize.
+    let l = label.clone();
+    h.main(move |app| app.get_window(&l).unwrap().maximize().ok());
+    let l = label.clone();
+    let tauri_max = h.wait(Duration::from_secs(3), |h| {
+        let l = l.clone();
+        h.main(move |app| app.get_window(&l).unwrap().is_maximized().unwrap())
+    });
+    let gpui_max = h.wait(Duration::from_secs(3), |h| {
+        h.refresh(&l);
+        h.seen(&l).is_some_and(|s| s.maximized)
+    });
+    h.check(
+        "Tauri maximize is reflected in GPUI is_maximized",
+        tauri_max && gpui_max,
+        format!("tauri {tauri_max}, gpui {gpui_max}"),
+    );
+    let l = label.clone();
+    h.main(move |app| app.get_window(&l).unwrap().unmaximize().ok());
+    let l = label.clone();
+    let gpui_unmax = h.wait(Duration::from_secs(3), |h| {
+        h.refresh(&l);
+        h.seen(&l).is_some_and(|s| !s.maximized)
+    });
+    h.check("Tauri unmaximize is reflected in GPUI", gpui_unmax, "");
+
     // GPUI → Tauri: zoom toggles maximize.
     let l = label.clone();
     h.gpui(move |cx| with_gpui_window(cx, &l, |window, _| window.zoom_window()));
@@ -765,6 +791,28 @@ fn window_state(h: &mut Harness) {
     h.check("GPUI zoom_window maximizes the Tauri window", zoomed, "");
     let l = label.clone();
     h.main(move |app| app.get_window(&l).unwrap().unmaximize().ok());
+
+    // Tauri → GPUI: fullscreen.
+    let l = label.clone();
+    h.main(move |app| app.get_window(&l).unwrap().set_fullscreen(true).ok());
+    let l = label.clone();
+    let gpui_fs = h.wait(Duration::from_secs(3), |h| {
+        h.refresh(&l);
+        h.seen(&l).is_some_and(|s| s.fullscreen)
+    });
+    h.check(
+        "Tauri fullscreen is reflected in GPUI is_fullscreen",
+        gpui_fs,
+        "",
+    );
+    let l = label.clone();
+    h.main(move |app| app.get_window(&l).unwrap().set_fullscreen(false).ok());
+    let l = label.clone();
+    let gpui_not_fs = h.wait(Duration::from_secs(3), |h| {
+        h.refresh(&l);
+        h.seen(&l).is_some_and(|s| !s.fullscreen)
+    });
+    h.check("leaving fullscreen is reflected in GPUI", gpui_not_fs, "");
 
     // Focus: Tauri set_focus → GPUI active window.
     let other = h.open_probe("state-other", (300., 200.));
