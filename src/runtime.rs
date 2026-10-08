@@ -19,7 +19,10 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use tauri::{AppHandle, EventLoopMessage, Wry};
 use tauri_runtime_wry::{
     EventLoopIterationContext, Message, TaoWindowId,
-    tao::{event::Event, event_loop::EventLoopProxy},
+    tao::{
+        event::{Event, WindowEvent},
+        event_loop::EventLoopProxy,
+    },
 };
 
 use crate::{
@@ -135,6 +138,11 @@ pub(crate) fn initialize(app: AppHandle<Wry>, config: GpuiConfig) -> Result<(), 
     }
     RUNTIME.with(|slot| slot.set(Some(runtime)));
     Ok(())
+}
+
+fn is_dummy(window_id: &TaoWindowId) -> bool {
+    // SAFETY: the dummy id is only compared, never used to address a window.
+    *window_id == unsafe { TaoWindowId::dummy() }
 }
 
 fn default_font() -> &'static str {
@@ -349,6 +357,19 @@ impl Runtime {
         }
 
         match event {
+            // GTK themes are application-wide: TAO reports the change once,
+            // with a dummy window id.
+            Event::WindowEvent {
+                window_id,
+                event: event @ WindowEvent::ThemeChanged(_),
+                ..
+            } if is_dummy(window_id) => {
+                let surfaces: Vec<_> = self.surfaces.borrow().values().cloned().collect();
+                let _guard = self.enter();
+                for surface in surfaces {
+                    events::dispatch(&surface, event);
+                }
+            }
             Event::WindowEvent {
                 window_id, event, ..
             } => {
@@ -382,12 +403,7 @@ impl Runtime {
         }
     }
 
-    fn track_window_state(
-        &self,
-        inner: &Rc<WindowInner>,
-        event: &tauri_runtime_wry::tao::event::WindowEvent<'_>,
-    ) {
-        use tauri_runtime_wry::tao::event::WindowEvent;
+    fn track_window_state(&self, inner: &Rc<WindowInner>, event: &WindowEvent<'_>) {
         match event {
             WindowEvent::CursorEntered { .. } => {
                 *self.platform.hovered_window.borrow_mut() = Some(inner.tauri_window.clone());
