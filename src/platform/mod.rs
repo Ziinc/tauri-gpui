@@ -120,7 +120,7 @@ pub(crate) struct TauriPlatform {
     pub(crate) active_window: Cell<Option<AnyWindowHandle>>,
     /// Label of the attached window under the pointer; cursor styles apply to it.
     pub(crate) hovered_window: RefCell<Option<tauri::Window<Wry>>>,
-    cursor_style: Cell<Option<CursorStyle>>,
+    pub(crate) cursor: CursorCache,
     callbacks: RefCell<PlatformCallbacks>,
     clipboard: clipboard::Clipboard,
 }
@@ -140,11 +140,28 @@ impl TauriPlatform {
             display,
             active_window: Cell::new(None),
             hovered_window: RefCell::new(None),
-            cursor_style: Cell::new(None),
+            cursor: CursorCache::default(),
             callbacks: RefCell::default(),
             clipboard: clipboard::Clipboard::default(),
             app,
         }
+    }
+}
+
+/// The cursor style last sent to the hovered window, to skip redundant
+/// updates (GPUI sets the style on every frame).
+#[derive(Default)]
+pub(crate) struct CursorCache(Cell<Option<CursorStyle>>);
+
+impl CursorCache {
+    /// Records `style`; returns whether it must be applied.
+    pub(crate) fn update(&self, style: CursorStyle) -> bool {
+        self.0.replace(Some(style)) != Some(style)
+    }
+
+    /// Forgets the cached style. Call when the pointer enters a window.
+    pub(crate) fn reset(&self) {
+        self.0.set(None);
     }
 }
 
@@ -361,7 +378,7 @@ impl Platform for TauriPlatform {
     }
 
     fn set_cursor_style(&self, style: CursorStyle) {
-        if self.cursor_style.replace(Some(style)) == Some(style) {
+        if !self.cursor.update(style) {
             return;
         }
         if let Some(window) = &*self.hovered_window.borrow() {
@@ -429,5 +446,25 @@ impl Platform for TauriPlatform {
 
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
         self.callbacks.borrow_mut().keyboard_layout_change = Some(callback);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_style_is_applied_once_per_hovered_window() {
+        let cursor = CursorCache::default();
+        assert!(cursor.update(CursorStyle::IBeam));
+        assert!(
+            !cursor.update(CursorStyle::IBeam),
+            "unchanged style is skipped"
+        );
+        assert!(cursor.update(CursorStyle::Arrow));
+        // The pointer moves into another window that wants the same style:
+        // that window has never been told, so it must be applied again.
+        cursor.reset();
+        assert!(cursor.update(CursorStyle::Arrow));
     }
 }
