@@ -258,6 +258,8 @@ impl Runtime {
             waker: self.waker.clone(),
             defer,
         });
+        // The window may have been built maximized or fullscreen.
+        inner.sync_window_mode();
         self.surfaces.borrow_mut().insert(label, inner.clone());
 
         let window_options = WindowOptions {

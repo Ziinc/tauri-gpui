@@ -80,6 +80,8 @@ Handled: resize, scale-factor change, move, focus, cursor enter/leave/move, mous
 
 `RedrawRequested` forces a present.
 
+TAO has no maximize/fullscreen events, so that state is re-read from Tauri at attach and on every resize and move; GPUI's `is_maximized`, `is_fullscreen` and `window_bounds` follow changes made through Tauri or the window manager.
+
 Keystrokes follow GPUI naming (`enter`, `left`, `f5`, lowercase characters). `key_char` comes from TAO's shift-aware logical key. When a TAO backend sends the same typed character twice (once as a key press, once as an IME commit), the duplicate is dropped.
 
 ## Minimal platform adapter: Phase 0 findings

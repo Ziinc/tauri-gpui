@@ -23,6 +23,7 @@ use gpui::{DevicePixels, size};
 pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
     match event {
         WindowEvent::Resized(physical) => {
+            inner.sync_window_mode();
             let scale = inner.state.borrow().scale_factor;
             inner.resized(physical_size(physical.width, physical.height), scale);
         }
@@ -30,12 +31,14 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             scale_factor,
             new_inner_size,
         } => {
+            inner.sync_window_mode();
             inner.resized(
                 physical_size(new_inner_size.width, new_inner_size.height),
                 *scale_factor as f32,
             );
         }
         WindowEvent::Moved(position) => {
+            inner.sync_window_mode();
             {
                 let mut state = inner.state.borrow_mut();
                 let scale = state.scale_factor;
