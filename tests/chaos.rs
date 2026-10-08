@@ -666,6 +666,45 @@ fn same_turn_teardown(h: &mut Harness) {
             "",
         );
     }
+
+    // Attach from inside GPUI (deferred mount), then destroy before the
+    // mount runs: the mount must be dropped, not run against a dead window.
+    let baseline = h.gpui_window_count();
+    let label = h.label("deferred");
+    let window = h.create_window(&label, (300., 200.));
+    let result = h.gpui(move |_| {
+        let result = attach_probe(&window);
+        window.destroy().ok();
+        result.err()
+    });
+    h.check(
+        "deferred attach accepted",
+        result.is_none(),
+        format!("{result:?}"),
+    );
+    let gone = h.window_gone(&label);
+    h.check("deferred attach then destroy: window gone", gone, "");
+    let settled = h.wait(Duration::from_secs(3), |h| {
+        h.gpui_window_count() == baseline
+    });
+    h.check(
+        "deferred attach then destroy: no orphan GPUI window",
+        settled,
+        format!("baseline {baseline}, now {}", h.gpui_window_count()),
+    );
+    let l = label.clone();
+    let alive = h.gpui(move |cx| probe(cx, &l).is_some());
+    h.check("deferred attach then destroy: no leaked root", !alive, "");
+
+    // Same, but closing (CloseRequested path) instead of destroying.
+    let label = h.label("deferred-close");
+    let window = h.create_window(&label, (300., 200.));
+    h.gpui(move |_| {
+        attach_probe(&window).ok();
+        window.close().ok();
+    });
+    let gone = h.window_gone(&label);
+    h.check("deferred attach then close: window gone", gone, "");
 }
 
 /// Rapid Tauri-side resizes: GPUI must end on the final size.
