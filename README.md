@@ -95,10 +95,11 @@ What GPUI needs for rendering and interaction:
 
 Everything else does one of three things:
 
+- **System clipboard:** text and images via `arboard`, including the Linux primary selection. Images are converted to and from RGBA (pasted images arrive as PNG; SVG cannot be copied). GPUI string metadata is kept in-process and reattached while the clipboard still holds the same text.
 - **Delegated to Tauri:** `quit`, `restart`, and the window title, focus, minimize, maximize, fullscreen and resize operations.
 - **Explicitly unsupported:** these return `GpuiError::UnsupportedOperation` through `anyhow`, or are logged at debug level when the GPUI signature has no error channel.
   - Windows: `open_window` outside `attach_gpui`, non-normal window kinds, background appearance (blur/transparency).
-  - System integration: clipboard (including the primary selection), credentials, menus and dock menus, path prompts (use `tauri-plugin-dialog`), `open_url` (use `tauri-plugin-opener`), URL schemes, `reveal_path`/`open_with_system`, app hide/unhide, idle-sleep prevention.
+  - System integration: credentials, menus and dock menus, path prompts (use `tauri-plugin-dialog`), `open_url` (use `tauri-plugin-opener`), URL schemes, `reveal_path`/`open_with_system`, app hide/unhide, idle-sleep prevention.
   - Input and accessibility: IME candidate positioning, accessibility (AccessKit).
 - **Handled by GPUI's built-in fallback:** prompts (`PlatformWindow::prompt` returns `None`).
 
@@ -136,7 +137,7 @@ With `GPUI_DEMO_AUTOTEST=<dir>` set, the demo:
 ## Remaining open questions
 
 - GPUI versioning: the crate tracks the `gpui-pre` snapshots, the same ones gpui-kit tracks, until upstream publishes a `gpui` with a public `Platform`.
-- Clipboard and IME positioning. Neither has a Tauri core API: clipboard is available through `tauri-plugin-clipboard-manager`, and IME positioning would need a TAO change.
+- IME positioning: it has no Tauri core API and would need a TAO change.
 - Accessibility (AccessKit through Tauri windows).
 - Building and testing on macOS and Windows.
 - Mobile, once `gpui-mobile` publishes its platform layer.

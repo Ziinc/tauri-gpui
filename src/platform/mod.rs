@@ -4,6 +4,7 @@
 //! implemented. Everything else is either delegated to Tauri (window
 //! management, quitting) or explicitly reported as unsupported.
 
+pub(crate) mod clipboard;
 pub(crate) mod dispatcher;
 pub(crate) mod window;
 
@@ -121,6 +122,7 @@ pub(crate) struct TauriPlatform {
     pub(crate) hovered_window: RefCell<Option<tauri::Window<Wry>>>,
     cursor_style: Cell<Option<CursorStyle>>,
     callbacks: RefCell<PlatformCallbacks>,
+    clipboard: clipboard::Clipboard,
 }
 
 impl TauriPlatform {
@@ -140,6 +142,7 @@ impl TauriPlatform {
             hovered_window: RefCell::new(None),
             cursor_style: Cell::new(None),
             callbacks: RefCell::default(),
+            clipboard: clipboard::Clipboard::default(),
             app,
         }
     }
@@ -379,21 +382,22 @@ impl Platform for TauriPlatform {
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
-        log_unsupported("read_from_clipboard");
-        None
+        self.clipboard.read(clipboard::Kind::Clipboard)
     }
 
-    fn write_to_clipboard(&self, _item: ClipboardItem) {
-        log_unsupported("write_to_clipboard");
+    fn write_to_clipboard(&self, item: ClipboardItem) {
+        self.clipboard.write(clipboard::Kind::Clipboard, item);
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn read_from_primary(&self) -> Option<ClipboardItem> {
-        None
+        self.clipboard.read(clipboard::Kind::Primary)
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn write_to_primary(&self, _item: ClipboardItem) {}
+    fn write_to_primary(&self, item: ClipboardItem) {
+        self.clipboard.write(clipboard::Kind::Primary, item);
+    }
 
     #[cfg(target_os = "macos")]
     fn read_from_find_pasteboard(&self) -> Option<ClipboardItem> {
