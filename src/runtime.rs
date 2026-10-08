@@ -294,6 +294,17 @@ impl Runtime {
             options,
             open,
         } = mount;
+        // A deferred mount can outlive its window: Tauri may have destroyed it
+        // (or already processed `Destroyed`) since `attach` queued the mount.
+        // Getters fail once Tauri has dropped the native window.
+        if inner.closed.get() || inner.tauri_window.inner_size().is_err() {
+            self.surfaces.borrow_mut().remove(&inner.label);
+            inner.destroy();
+            return Err(GpuiError::NotEligible {
+                label: inner.label.clone(),
+                reason: "the window was destroyed before GPUI could be mounted",
+            });
+        }
         PENDING_SURFACE.with(|pending| *pending.borrow_mut() = Some(inner.clone()));
         let result = self.update(|cx| open(cx, options));
         PENDING_SURFACE.with(|pending| pending.borrow_mut().take());
