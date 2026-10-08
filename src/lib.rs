@@ -259,12 +259,10 @@ mod hook {
             context: EventLoopIterationContext<'_, EventLoopMessage>,
             _web_context: &WebContextStore,
         ) -> bool {
-            let _ = crate::runtime::with(|runtime| {
-                runtime.handle_event(event, proxy, &context);
-                Ok(())
-            });
-            // Never swallow events: Tauri still handles every window event.
-            false
+            // Events are only swallowed when GPUI vetoes a close request;
+            // Tauri handles every other event as usual.
+            crate::runtime::with(|runtime| Ok(runtime.handle_event(event, proxy, &context)))
+                .unwrap_or(false)
         }
     }
 }

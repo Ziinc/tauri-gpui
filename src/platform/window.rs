@@ -229,6 +229,17 @@ impl WindowInner {
         self.schedule_frame();
     }
 
+    /// Asks GPUI whether the window may close (`Window::on_window_should_close`).
+    pub fn should_close(&self) -> bool {
+        let callback = self.callbacks.borrow_mut().should_close.take();
+        let Some(mut callback) = callback else {
+            return true;
+        };
+        let allowed = callback();
+        restore(&mut self.callbacks.borrow_mut().should_close, callback);
+        allowed
+    }
+
     pub fn call_bool(
         &self,
         which: fn(&mut Callbacks) -> &mut Option<Box<dyn FnMut(bool)>>,

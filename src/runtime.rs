@@ -18,7 +18,7 @@ use gpui_wgpu::{CosmicTextSystem, WgpuRenderer, WgpuSurfaceConfig};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use tauri::{AppHandle, EventLoopMessage, Wry};
 use tauri_runtime_wry::{
-    EventLoopIterationContext, Message, TaoWindowId,
+    EventLoopIterationContext, Message, TaoWindowId, WindowMessage,
     tao::{
         event::{Event, WindowEvent},
         event_loop::EventLoopProxy,
@@ -336,12 +336,14 @@ impl Runtime {
         Some(inner)
     }
 
+    /// Feeds one TAO event to GPUI. Returns `true` when Tauri must not handle
+    /// the event (GPUI vetoed a close request).
     pub(crate) fn handle_event(
         &self,
         event: &Event<'_, Message<EventLoopMessage>>,
         proxy: &EventLoopProxy<Message<EventLoopMessage>>,
         context: &EventLoopIterationContext<'_, EventLoopMessage>,
-    ) {
+    ) -> bool {
         if !self.proxy_installed.replace(true) {
             let proxy = Mutex::new(proxy.clone());
             self.waker.set(Box::new(move || {
@@ -353,7 +355,7 @@ impl Runtime {
         }
         if self.depth.get() > 0 {
             // TAO never re-enters its callback, but be defensive.
-            return;
+            return false;
         }
 
         match event {
@@ -370,11 +372,34 @@ impl Runtime {
                     events::dispatch(&surface, event);
                 }
             }
+            // Closing through the window manager.
+            Event::WindowEvent {
+                window_id,
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
+                if let Some(inner) = self.surface_for(*window_id, context) {
+                    return self.veto_close(&inner);
+                }
+            }
+            // `tauri::Window::close()`.
+            Event::UserEvent(Message::Window(id, WindowMessage::Close)) => {
+                let label = context
+                    .windows
+                    .0
+                    .try_borrow()
+                    .ok()
+                    .and_then(|windows| Some(windows.get(id)?.label().to_string()));
+                let inner = label.and_then(|label| self.surfaces.borrow().get(&label).cloned());
+                if let Some(inner) = inner {
+                    return self.veto_close(&inner);
+                }
+            }
             Event::WindowEvent {
                 window_id, event, ..
             } => {
                 let Some(inner) = self.surface_for(*window_id, context) else {
-                    return;
+                    return false;
                 };
                 self.track_window_state(&inner, event);
                 let destroyed = {
@@ -401,6 +426,16 @@ impl Runtime {
             Event::LoopDestroyed => self.shutdown(),
             _ => {}
         }
+        false
+    }
+
+    /// Consults GPUI's `on_window_should_close` before Tauri closes the window.
+    fn veto_close(&self, inner: &WindowInner) -> bool {
+        if inner.closed.get() {
+            return false;
+        }
+        let _guard = self.enter();
+        !inner.should_close()
     }
 
     fn track_window_state(&self, inner: &Rc<WindowInner>, event: &WindowEvent<'_>) {
