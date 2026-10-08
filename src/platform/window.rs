@@ -310,13 +310,14 @@ pub(crate) struct TauriGpuiWindow {
 impl Drop for TauriGpuiWindow {
     fn drop(&mut self) {
         // GPUI removed the window (e.g. `window.remove_window()`). Tauri owns
-        // native windows, so ask Tauri to close it rather than leaving a
-        // window with no content renderer.
+        // native windows, so ask Tauri to destroy it rather than leaving a
+        // window with no content renderer. Not `close()`: a Tauri
+        // `prevent_close` handler would keep a blank window alive.
         if !self.inner.closed.get() {
             let window = self.inner.tauri_window.clone();
             (self.inner.defer)(Box::new(move || {
-                if let Err(error) = window.close() {
-                    log::warn!("failed to close Tauri window after GPUI removed it: {error}");
+                if let Err(error) = window.destroy() {
+                    log::warn!("failed to destroy Tauri window after GPUI removed it: {error}");
                 }
             }));
         }
