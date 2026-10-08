@@ -1336,6 +1336,26 @@ fn many_windows(h: &mut Harness) {
     }
 }
 
+/// `window.remove_window()` in GPUI tears the GPUI side down: the Tauri
+/// window must go too, even when a Tauri close handler would veto it —
+/// otherwise a blank window with no content renderer is left behind.
+fn gpui_remove_window(h: &mut Harness) {
+    let label = h.open_probe("remove", (300., 200.));
+    h.rendered(&label);
+    let l = label.clone();
+    h.main(move |app| {
+        app.get_window(&l).unwrap().on_window_event(|event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+            }
+        });
+    });
+    let l = label.clone();
+    h.gpui(move |cx| with_gpui_window(cx, &l, |window, _| window.remove_window()));
+    let gone = h.window_gone(&label);
+    h.check("GPUI remove_window destroys the Tauri window", gone, "");
+}
+
 /// Floods of foreground tasks and timers all complete, in bounded drains.
 fn task_flood(h: &mut Harness) {
     const TASKS: usize = 5000;
@@ -1640,6 +1660,7 @@ fn run(app: AppHandle<Wry>, seed: u64) {
         ("input_chaos", input_chaos),
         ("hide_show", hide_show),
         ("many_windows", many_windows),
+        ("gpui_remove_window", gpui_remove_window),
         ("task_flood", task_flood),
         ("attach_from_gpui", attach_from_gpui),
         ("gpui_window_ops", gpui_window_ops),
