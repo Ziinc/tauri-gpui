@@ -76,7 +76,7 @@ fn main() {
 
 ### Event coverage
 
-Handled: resize, scale-factor change, move, focus, cursor enter/leave/move, mouse buttons with click counting, mouse wheel (line and pixel deltas), keyboard down/up with repeat, modifier and caps-lock state, IME commit text, theme change, and destroy (teardown).
+Handled: resize, scale-factor change, move, focus, cursor enter/leave/move, mouse buttons with click counting, mouse wheel (line and pixel deltas), keyboard down/up with repeat, modifier and caps-lock state, IME commit text, theme change (including GTK's application-wide theme change, which TAO reports without a window id), and destroy (teardown).
 
 `RedrawRequested` forces a present.
 
