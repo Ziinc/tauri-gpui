@@ -80,6 +80,8 @@ Handled: resize, scale-factor change, move, focus, cursor enter/leave/move, mous
 
 `RedrawRequested` forces a present.
 
+TAO has no maximize/fullscreen events, so that state is re-read from Tauri at attach and on every resize and move; GPUI's `is_maximized`, `is_fullscreen` and `window_bounds` follow changes made through Tauri or the window manager.
+
 Keystrokes follow GPUI naming (`enter`, `left`, `f5`, lowercase characters). `key_char` comes from TAO's shift-aware logical key. When a TAO backend sends the same typed character twice (once as a key press, once as an IME commit), the duplicate is dropped.
 
 ## Minimal platform adapter: Phase 0 findings
@@ -133,6 +135,26 @@ With `GPUI_DEMO_AUTOTEST=<dir>` set, the demo:
 2. asserts on GPUI state for each PRD success criterion;
 3. captures every window with [`tauri-plugin-screenshots`](https://crates.io/crates/tauri-plugin-screenshots);
 4. writes `report.json` and exits non-zero if any check fails.
+
+## Chaos and integration tests
+
+[`tests/chaos.rs`](tests/chaos.rs) runs a real Tauri (Wry) event loop with `tauri-plugin-clipboard-manager` installed and hammers the plugin from a driver thread, asserting on what GPUI and Tauri observe:
+
+- API contract: `NotInitialized`, `AlreadyInitialized`, `NotMainThread`, `AlreadyAttached`, `NotEligible` (WebView windows), `Reentrant`, and `open_window` rejection;
+- randomized create/attach/close/destroy/`remove_window` storms, attach-then-teardown in one turn, 10 concurrent windows torn down at once, label reuse; every GPUI root must be released;
+- resize storms, hide/show cycles, and window state in both directions (title, maximize, fullscreen, focus, minimize, position, theme);
+- close handling (Tauri `prevent_close`, `destroy`) and `cx.quit()` routed through Tauri's `ExitRequested`;
+- Tauri events, managed state, `on_window_event`, `async_runtime` and `run_on_main_thread` used together with GPUI; GPUI timers, background tasks and floods of 20k foreground tasks;
+- the clipboard shared with `tauri-plugin-clipboard-manager`;
+- 600 cross-thread calls while windows churn, and random real X11 keyboard/mouse input via `xdotool` (typed text must arrive exactly once).
+
+```sh
+# needs: Xvfb, openbox, xdotool, a Vulkan driver; prints its seed
+scripts/chaos-test.sh
+CHAOS_SEED=42 CHAOS_ONLY=lifecycle_storm,clipboard scripts/chaos-test.sh
+```
+
+Without a display, `cargo test` skips the suite.
 
 ## Remaining open questions
 
