@@ -975,6 +975,32 @@ fn tauri_integration(h: &mut Harness) {
         ok,
         "",
     );
+    // Theme: Tauri set_theme → GPUI appearance.
+    let l = label.clone();
+    h.main(move |app| {
+        app.get_window(&l)
+            .unwrap()
+            .set_theme(Some(tauri::Theme::Dark))
+            .ok()
+    });
+    let l = label.clone();
+    let dark = h.wait(Duration::from_secs(3), |h| {
+        h.refresh(&l);
+        h.seen(&l).is_some_and(|s| {
+            matches!(
+                s.appearance,
+                Some(WindowAppearance::Dark | WindowAppearance::VibrantDark)
+            )
+        })
+    });
+    h.check("Tauri set_theme(Dark) reaches GPUI appearance", dark, "");
+    let l = label.clone();
+    h.main(move |app| {
+        app.get_window(&l)
+            .unwrap()
+            .set_theme(Some(tauri::Theme::Light))
+            .ok()
+    });
 
     h.close(&label);
     h.window_gone(&label);
