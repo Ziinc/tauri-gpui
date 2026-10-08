@@ -24,5 +24,10 @@ WM_PID=$!
 sleep 1
 
 export RUST_LOG="${RUST_LOG:-warn}"
+# TAO reads the theme from the XDG desktop portal over the session D-Bus,
+# blocking up to 5s per window (25s on first use while the bus tries to
+# activate it). CI runners have a session bus whose portal never answers, so
+# run without one: the lookup then fails immediately and TAO falls back to GTK.
+export DBUS_SESSION_BUS_ADDRESS=disabled:
 # The suite's own watchdog (CHAOS_TIMEOUT_SECS, default 600) fires first.
 timeout $(( ${CHAOS_TIMEOUT_SECS:-600} + 60 )) cargo test --manifest-path "$ROOT/Cargo.toml" --test chaos
