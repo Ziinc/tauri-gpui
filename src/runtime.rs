@@ -455,6 +455,9 @@ impl Runtime {
         match event {
             WindowEvent::CursorEntered { .. } => {
                 *self.platform.hovered_window.borrow_mut() = Some(inner.tauri_window.clone());
+                // Cursor icons are per native window: the cached style
+                // belongs to the previously hovered one.
+                self.platform.cursor.reset();
             }
             WindowEvent::CursorLeft { .. } => {
                 let mut hovered = self.platform.hovered_window.borrow_mut();
