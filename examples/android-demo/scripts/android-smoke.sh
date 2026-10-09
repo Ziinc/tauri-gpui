@@ -10,8 +10,11 @@ APK=$1
 OUT=${2:-target/android-smoke}
 PKG=dev.taurigpui.androiddemo
 mkdir -p "$OUT"
+# Bound every adb call so a wedged device fails the run instead of hanging it.
+ADB_BIN=$(command -v adb)
+adb() { timeout 90 "$ADB_BIN" "$@"; }
 
-adb wait-for-device
+timeout 300 "$ADB_BIN" wait-for-device
 adb install -r -g "$APK"
 adb logcat -c
 adb shell am start -n "$PKG/.MainActivity"
