@@ -162,6 +162,7 @@ pub(crate) struct CursorCache(Cell<Option<CursorStyle>>);
 
 impl CursorCache {
     /// Records `style`; returns whether it must be applied.
+    #[cfg_attr(gpui_android, allow(dead_code))]
     pub(crate) fn update(&self, style: CursorStyle) -> bool {
         self.0.replace(Some(style)) != Some(style)
     }
@@ -429,13 +430,15 @@ impl Platform for TauriPlatform {
     }
 
     fn set_cursor_style(&self, style: CursorStyle) {
-        if !self.cursor.update(style) {
-            return;
-        }
+        // Touch screens have no cursor.
         #[cfg(not(gpui_android))]
-        if let Some(window) = &*self.hovered_window.borrow() {
+        if self.cursor.update(style)
+            && let Some(window) = &*self.hovered_window.borrow()
+        {
             let _ = window.set_cursor_icon(cursor_icon(style));
         }
+        #[cfg(gpui_android)]
+        let _ = style;
     }
 
     fn hide_cursor_until_mouse_moves(&self) {
