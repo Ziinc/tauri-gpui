@@ -1,2 +1,2 @@
-# `tauri android init` regenerates the Gradle project (CI does it every run).
 /gen
+/node_modules

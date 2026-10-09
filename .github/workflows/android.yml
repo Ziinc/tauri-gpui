@@ -28,18 +28,20 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
-      - name: Install NDK and Tauri CLI
+      - name: Install NDK
         run: |
           sdkmanager --install "ndk;$NDK_VERSION"
           echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
-          npm install -g @tauri-apps/cli@2
       - name: Lint (Android target)
         run: cargo clippy -p tauri-plugin-gpui --features mobile --target aarch64-linux-android -- -D warnings
       - name: Build debug APK
         working-directory: examples/android-demo
+        # The Gradle project calls back into the CLI, so it must be a local
+        # npm install rather than a global one.
         run: |
-          tauri android init --ci
-          tauri android build --debug --apk --target x86_64 --target aarch64 --ci
+          npm ci
+          npm run tauri -- android init --ci
+          npm run tauri -- android build --debug --apk --target x86_64 --target aarch64 --ci
           cp gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk "$RUNNER_TEMP/android-demo.apk"
       - uses: actions/upload-artifact@v4
         with:
