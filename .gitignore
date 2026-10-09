@@ -1,2 +1,3 @@
 /target
-/examples/gpui-demo/gen/schemas
+/examples/gpui-demo/target
+/examples/*/gen/schemas

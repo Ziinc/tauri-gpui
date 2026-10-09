@@ -8,8 +8,12 @@
 //! Set `GPUI_DEMO_AUTOTEST=<dir>` to run the scripted scenario in
 //! `autotest.rs`, which drives real OS input with `xdotool` and captures
 //! screenshots through `tauri-plugin-screenshots`.
+//!
+//! `cargo test -p gpui-demo` runs headless gpui-kit UI tests (`tests.rs`).
 
 mod autotest;
+#[cfg(test)]
+mod tests;
 
 use gpui_kit::{
     component::{
@@ -65,6 +69,15 @@ pub struct TodoStore {
 }
 
 impl TodoStore {
+    /// The store the demo launches with.
+    pub fn seeded() -> Self {
+        let mut store = Self::default();
+        store.add("Read the PRD");
+        store.add("Attach GPUI to a Tauri window");
+        store.todos[0].done = true;
+        store
+    }
+
     pub fn add(&mut self, title: &str) -> bool {
         let title = title.trim();
         if title.is_empty() {
@@ -116,6 +129,12 @@ impl Render for Blank {
 
 pub fn store(cx: &App) -> Entity<TodoStore> {
     cx.global::<Store>().0.clone()
+}
+
+/// `TauriApp` is absent in headless tests, where no summary window exists.
+fn summary_open(cx: &App) -> bool {
+    cx.try_global::<TauriApp>()
+        .is_some_and(|app| app.0.get_window("summary").is_some())
 }
 
 struct TodoView {
@@ -179,7 +198,7 @@ impl Render for TodoView {
         store_entity.update(cx, |s, _| {
             s.viewport = (f32::from(viewport.width), f32::from(viewport.height));
         });
-        let summary_open = cx.global::<TauriApp>().0.get_window("summary").is_some();
+        let summary_open = summary_open(cx);
         let state = store_entity.read(cx);
         let visible = state.visible();
         let remaining = state.remaining();
@@ -220,12 +239,16 @@ impl Render for TodoView {
                                     .font_weight(FontWeight::BOLD)
                                     .child("Todos"),
                             )
-                            .child(
+                            .child({
+                                let left = format!("{remaining} of {total} left");
                                 div()
+                                    .id("remaining")
+                                    .test_support()
+                                    .aria_label(left.clone())
                                     .text_sm()
                                     .text_color(theme.muted_foreground)
-                                    .child(format!("{remaining} of {total} left")),
-                            ),
+                                    .child(left)
+                            }),
                     )
                     .child(
                         Button::new("theme-toggle")
@@ -250,7 +273,7 @@ impl Render for TodoView {
                     .h(px(CONTROL_H))
                     .flex()
                     .gap_2()
-                    .child(div().flex_1().child(Input::new(&self.input)))
+                    .child(div().flex_1().child(Input::new(&self.input).id("new-todo")))
                     .child(
                         Button::new("add")
                             .primary()
@@ -270,6 +293,7 @@ impl Render for TodoView {
                         let id = todo.id;
                         div()
                             .id(("row", id))
+                            .test_support()
                             .h(px(ROW_H))
                             .flex()
                             .items_center()
@@ -394,8 +418,11 @@ impl Render for SummaryView {
             done as f32 * 100. / total as f32
         };
         let theme = cx.theme();
-        let stat = |label: &'static str, value: usize| {
+        let stat = |id: &'static str, label: &'static str, value: usize| {
             div()
+                .id(id)
+                .test_support()
+                .aria_label(value.to_string())
                 .flex_1()
                 .flex()
                 .flex_col()
@@ -441,9 +468,9 @@ impl Render for SummaryView {
                 div()
                     .flex()
                     .gap_3()
-                    .child(stat("Total", total))
-                    .child(stat("Active", total - done))
-                    .child(stat("Done", done)),
+                    .child(stat("stat-total", "Total", total))
+                    .child(stat("stat-active", "Active", total - done))
+                    .child(stat("stat-done", "Done", done)),
             )
             .child(Progress::new("progress").value(pct))
             .child(div().text_sm().child(format!("{pct:.0}% complete")))
@@ -464,7 +491,9 @@ fn attach_with_root<V: Render>(
 /// Creates the summary window through Tauri and attaches GPUI to it. Called
 /// from inside a GPUI click handler, so the mount completes after the handler.
 pub fn open_summary(cx: &mut App) {
-    let app = cx.global::<TauriApp>().0.clone();
+    let Some(app) = cx.try_global::<TauriApp>().map(|app| app.0.clone()) else {
+        return;
+    };
     if app.get_window("summary").is_some() {
         return;
     }
@@ -484,7 +513,10 @@ pub fn open_summary(cx: &mut App) {
 }
 
 pub fn close_summary(cx: &mut App) {
-    if let Some(window) = cx.global::<TauriApp>().0.get_window("summary") {
+    if let Some(window) = cx
+        .try_global::<TauriApp>()
+        .and_then(|app| app.0.get_window("summary"))
+    {
         let _ = window.close();
     }
 }
@@ -500,13 +532,7 @@ fn main() {
                     .assets(gpui_kit::assets::Assets)
                     .on_launch(move |cx| {
                         gpui_kit::init(cx);
-                        let store = cx.new(|_| {
-                            let mut store = TodoStore::default();
-                            store.add("Read the PRD");
-                            store.add("Attach GPUI to a Tauri window");
-                            store.todos[0].done = true;
-                            store
-                        });
+                        let store = cx.new(|_| TodoStore::seeded());
                         cx.set_global(Store(store));
                         cx.set_global(TauriApp(handle));
                     }),

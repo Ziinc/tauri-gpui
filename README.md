@@ -117,13 +117,29 @@ Everything else does one of three things:
 
 ## Example and screenshot testing
 
-Run the demo with `cargo run -p gpui-demo`.
+[`examples/basic`](examples/basic) is the smallest app: one Tauri window rendered by plain GPUI (`tauri_plugin_gpui::gpui`, no component library) with a click counter. It is part of the plugin's workspace.
+
+```sh
+cargo run -p basic
+```
 
 [`examples/gpui-demo`](examples/gpui-demo) is the PRD's sample application: a to-do list built with [gpui-kit](https://crates.io/crates/gpui-kit) components (Input, Checkbox, Button, Progress, light/dark theme). It contains:
 
 - a GPUI-backed `main` window with the to-do list: add, check off, delete and filter, plus a theme toggle;
 - a `summary` window that a GPUI click handler creates, closes and recreates. It shows live stats from the same store;
 - an ordinary WebView window.
+
+```sh
+cargo run --manifest-path examples/gpui-demo/Cargo.toml
+```
+
+Headless UI tests follow the [gpui-kit testing guide](https://gpui-kit.com/docs/test/): the demo's views render in gpui-kit test windows (no Tauri, no display server), clicks and keystrokes go through GPUI's event dispatch, and assertions read element state (`checked`, `value`, `focused`, `bounds`, labels) and the shared store. They live in [`src/tests.rs`](examples/gpui-demo/src/tests.rs) and use gpui-kit's `test-support` feature as a dev-dependency. The demo is a standalone Cargo workspace, so gpui-kit is never a dependency of the plugin itself.
+
+```sh
+cargo test --manifest-path examples/gpui-demo/Cargo.toml
+```
+
+The screenshot test below drives the real Tauri app end to end:
 
 ```sh
 # needs: Xvfb, openbox (or another EWMH WM), xdotool, a Vulkan driver (mesa-vulkan-drivers)

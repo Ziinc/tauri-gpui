@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "basic",
+  "version": "0.1.0",
+  "identifier": "dev.tauri-gpui.basic",
+  "build": {
+    "frontendDist": []
+  },
+  "app": {
+    "windows": [],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png"]
+  }
+}
