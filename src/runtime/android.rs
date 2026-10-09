@@ -263,6 +263,15 @@ impl Runtime {
                     inner.schedule_frame();
                 }
             }
+            ViewEvent::Back => {
+                // The app-level handler (`tauri_plugin_gpui::on_back`) wins;
+                // otherwise GPUI's per-window back handler, if one is set.
+                if let Some(handler) = crate::back_handler() {
+                    self.app.update(|cx| handler(cx));
+                } else if let Some(inner) = &inner {
+                    input_event(inner, ViewEvent::Back);
+                }
+            }
             event => {
                 if let Some(inner) = &inner {
                     input_event(inner, event);

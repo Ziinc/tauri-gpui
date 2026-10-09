@@ -169,6 +169,34 @@ pub fn with_app<R>(f: impl FnOnce(&mut gpui::App) -> R) -> Result<R, GpuiError> 
     }
 }
 
+thread_local! {
+    static BACK_HANDLER: std::cell::RefCell<Option<std::rc::Rc<dyn Fn(&mut gpui::App)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Sets the handler for the system back action (the Android back button
+/// or gesture). It only runs while [`set_back_enabled`] is `true`; otherwise
+/// back leaves the app as usual. Never called on desktop.
+///
+/// Call on the main thread (for example from GPUI code).
+pub fn on_back(handler: impl Fn(&mut gpui::App) + 'static) {
+    BACK_HANDLER.with(|slot| *slot.borrow_mut() = Some(std::rc::Rc::new(handler)));
+}
+
+/// Declares whether the app currently handles the back action, typically
+/// whether its navigation stack is deeper than its root. No-op on desktop.
+pub fn set_back_enabled(enabled: bool) {
+    #[cfg(gpui_android)]
+    android::set_back_enabled(enabled);
+    #[cfg(not(gpui_android))]
+    let _ = enabled;
+}
+
+#[cfg_attr(not(gpui_android), allow(dead_code))]
+pub(crate) fn back_handler() -> Option<std::rc::Rc<dyn Fn(&mut gpui::App)>> {
+    BACK_HANDLER.with(|slot| slot.borrow().clone())
+}
+
 /// Attaches GPUI as the content renderer of a Tauri window.
 pub trait GpuiWindowExt {
     /// Permanently attaches GPUI to this window and mounts `root` as its root
