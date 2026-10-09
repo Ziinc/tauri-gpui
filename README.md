@@ -137,22 +137,27 @@ With `GPUI_DEMO_AUTOTEST=<dir>` set, the demo:
 3. captures every window with [`tauri-plugin-screenshots`](https://crates.io/crates/tauri-plugin-screenshots);
 4. writes `report.json` and exits non-zero if any check fails.
 
-## Chaos and integration tests
+## Integration and chaos tests
 
-[`tests/chaos.rs`](tests/chaos.rs) runs a real Tauri (Wry) event loop with `tauri-plugin-clipboard-manager` installed and hammers the plugin from a driver thread, asserting on what GPUI and Tauri observe:
+[`tests/integration`](tests/integration) runs a real Tauri (Wry) event loop with `tauri-plugin-clipboard-manager` installed and drives the plugin from a test thread, asserting on what GPUI and Tauri observe. Each file covers one domain, with small atomic tests:
 
-- API contract: `NotInitialized`, `AlreadyInitialized`, `NotMainThread`, `AlreadyAttached`, `NotEligible` (WebView windows), `Reentrant`, and `open_window` rejection;
-- randomized create/attach/close/destroy/`remove_window` storms, attach-then-teardown in one turn, 10 concurrent windows torn down at once, label reuse; every GPUI root must be released;
-- resize storms, hide/show cycles, and window state in both directions (title, maximize, fullscreen, focus, minimize, position, theme);
-- close handling (Tauri `prevent_close`, `destroy`) and `cx.quit()` routed through Tauri's `ExitRequested`;
-- Tauri events, managed state, `on_window_event`, `async_runtime` and `run_on_main_thread` used together with GPUI; GPUI timers, background tasks and floods of 20k foreground tasks;
-- the clipboard shared with `tauri-plugin-clipboard-manager`;
-- 600 cross-thread calls while windows churn, and random real X11 keyboard/mouse input via `xdotool` (typed text must arrive exactly once).
+| File | Covers |
+|---|---|
+| `api.rs` | `NotInitialized`, `AlreadyInitialized`, `NotMainThread`, `AlreadyAttached`, `NotEligible` (WebView windows), `Reentrant`, `open_window` rejection, effect flushing in `with_app` |
+| `lifecycle.rs` | randomized create/attach/close/destroy/`remove_window` storms, teardown in the attaching turn or before a deferred mount, 10 windows torn down at once, label reuse, attaching from GPUI tasks |
+| `window_state.rs` | resize storms, hide/show, position, title, theme, maximize, fullscreen, focus, minimize, in both directions |
+| `close.rs` | Tauri `prevent_close`, `destroy`, GPUI `on_window_should_close`, `cx.quit()` through `ExitRequested` |
+| `tauri_apis.rs` | Tauri events both ways, managed state, `on_window_event`, `async_runtime` |
+| `tasks.rs` | GPUI timers and background tasks waking the loop, 5k-task/300-timer floods, a 20k-task burst, 600 cross-thread calls during window churn |
+| `clipboard.rs` | the clipboard shared with `tauri-plugin-clipboard-manager` |
+| `input.rs` | random real X11 keyboard and mouse input via `xdotool` (typed text must arrive exactly once) |
+
+Shared helpers live in `support/`: the probe view mounted in every window, the per-test context, and the runner. After every test the runner destroys all remaining windows and fails the test if any GPUI window or root outlived its Tauri window. Tauri's event loop owns the main thread once per process, so this is one custom-harness (`harness = false`) target that runs the tests sequentially.
 
 ```sh
 # needs: Xvfb, openbox, xdotool, a Vulkan driver; prints its seed
-scripts/chaos-test.sh
-CHAOS_SEED=42 CHAOS_ONLY=lifecycle_storm,clipboard scripts/chaos-test.sh
+scripts/integration-test.sh
+CHAOS_SEED=42 scripts/integration-test.sh lifecycle:: clipboard::gpui_reads   # filter by name
 ```
 
 Without a display, `cargo test` skips the suite.

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Runs the chaos/integration suite (tests/chaos.rs) on a virtual X display
+# Runs the integration/chaos suite (tests/integration) on a virtual X display
 # with a window manager, so maximize/fullscreen/focus and xdotool input
 # checks run too. Requires: Xvfb, openbox (any EWMH window manager), xdotool
 # and a Vulkan driver (mesa-vulkan-drivers provides lavapipe).
 #
-# Usage: scripts/chaos-test.sh            # random seed (printed)
-#        CHAOS_SEED=42 scripts/chaos-test.sh
-#        CHAOS_ONLY=lifecycle_storm,clipboard scripts/chaos-test.sh
+# Usage: scripts/integration-test.sh                   # random seed (printed)
+#        CHAOS_SEED=42 scripts/integration-test.sh
+#        scripts/integration-test.sh lifecycle:: clipboard  # filter by name
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DISPLAY_NUM="${DISPLAY_NUM:-98}"
 
-cargo build --manifest-path "$ROOT/Cargo.toml" --test chaos
+cargo build --manifest-path "$ROOT/Cargo.toml" --test integration
 
 Xvfb ":$DISPLAY_NUM" -screen 0 1600x1000x24 -nolisten tcp &
 XVFB_PID=$!
@@ -30,4 +30,4 @@ export RUST_LOG="${RUST_LOG:-warn}"
 # run without one: the lookup then fails immediately and TAO falls back to GTK.
 export DBUS_SESSION_BUS_ADDRESS=disabled:
 # The suite's own watchdog (CHAOS_TIMEOUT_SECS, default 600) fires first.
-timeout $(( ${CHAOS_TIMEOUT_SECS:-600} + 60 )) cargo test --manifest-path "$ROOT/Cargo.toml" --test chaos
+timeout $(( ${CHAOS_TIMEOUT_SECS:-600} + 60 )) cargo test --manifest-path "$ROOT/Cargo.toml" --test integration -- "$@"

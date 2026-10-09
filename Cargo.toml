@@ -51,8 +51,10 @@ windows = { version = "0.62", features = ["Win32_Foundation"] }
 tauri = { version = "2.12", features = ["unstable", "test"] }
 tauri-plugin-clipboard-manager = "2"
 
-# Chaos/integration suite: drives a real Tauri event loop, which must own the
-# main thread, so it uses its own harness. Skips without a display.
+# Integration/chaos suite (tests/integration): drives a real Tauri event
+# loop, which must own the main thread, so it uses its own harness. Skips
+# without a display.
 [[test]]
-name = "chaos"
+name = "integration"
+path = "tests/integration/main.rs"
 harness = false
