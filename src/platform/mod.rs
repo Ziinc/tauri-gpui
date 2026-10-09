@@ -4,8 +4,13 @@
 //! implemented. Everything else is either delegated to Tauri (window
 //! management, quitting) or explicitly reported as unsupported.
 
+#[cfg(not(gpui_android))]
+pub(crate) mod clipboard;
+#[cfg(gpui_android)]
+#[path = "clipboard_android.rs"]
 pub(crate) mod clipboard;
 pub(crate) mod dispatcher;
+mod queue;
 pub(crate) mod window;
 
 use std::{
@@ -108,6 +113,8 @@ struct PlatformCallbacks {
     validate_app_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     keyboard_layout_change: Option<Box<dyn FnMut()>>,
     thermal_state_change: Option<Box<dyn FnMut()>>,
+    #[cfg(gpui_android)]
+    app_lifecycle: Option<Box<dyn FnMut(gpui::AppLifecyclePhase)>>,
 }
 
 pub(crate) struct TauriPlatform {
@@ -165,6 +172,35 @@ impl CursorCache {
     }
 }
 
+#[cfg(gpui_android)]
+impl TauriPlatform {
+    /// Reports an Android activity lifecycle change to GPUI.
+    pub(crate) fn app_lifecycle(&self, phase: gpui::AppLifecyclePhase) {
+        let callback = self.callbacks.borrow_mut().app_lifecycle.take();
+        if let Some(mut callback) = callback {
+            callback(phase);
+            let mut callbacks = self.callbacks.borrow_mut();
+            if callbacks.app_lifecycle.is_none() {
+                callbacks.app_lifecycle = Some(callback);
+            }
+        }
+    }
+}
+
+/// Android scroll feel for GPUI's touch gesture recognizers.
+#[cfg(gpui_android)]
+struct AndroidGestures;
+
+#[cfg(gpui_android)]
+impl gpui::PlatformGestures for AndroidGestures {
+    fn tuning(&self) -> gpui::GestureTuning {
+        gpui::GestureTuning {
+            scroll_physics: gpui::ScrollPhysics::android(),
+            ..Default::default()
+        }
+    }
+}
+
 fn unsupported<T>(operation: &'static str) -> Result<T> {
     Err(anyhow!(GpuiError::UnsupportedOperation { operation }))
 }
@@ -179,6 +215,7 @@ fn log_unsupported(operation: &'static str) {
     log::debug!("tauri-plugin-gpui: `{operation}` is not supported by the minimal GPUI adapter");
 }
 
+#[cfg_attr(gpui_android, allow(dead_code))]
 fn cursor_icon(style: CursorStyle) -> tauri::CursorIcon {
     use tauri::CursorIcon as C;
     match style {
@@ -279,7 +316,21 @@ impl Platform for TauriPlatform {
     }
 
     fn window_appearance(&self) -> WindowAppearance {
+        #[cfg(gpui_android)]
+        if crate::android::is_dark() {
+            return WindowAppearance::Dark;
+        }
         WindowAppearance::Light
+    }
+
+    #[cfg(gpui_android)]
+    fn on_app_lifecycle(&self, callback: Box<dyn FnMut(gpui::AppLifecyclePhase)>) {
+        self.callbacks.borrow_mut().app_lifecycle = Some(callback);
+    }
+
+    #[cfg(gpui_android)]
+    fn gestures(&self) -> Option<Rc<dyn gpui::PlatformGestures>> {
+        Some(Rc::new(AndroidGestures))
     }
 
     fn open_url(&self, url: &str) {
@@ -381,6 +432,7 @@ impl Platform for TauriPlatform {
         if !self.cursor.update(style) {
             return;
         }
+        #[cfg(not(gpui_android))]
         if let Some(window) = &*self.hovered_window.borrow() {
             let _ = window.set_cursor_icon(cursor_icon(style));
         }

@@ -171,6 +171,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "android-demo"
+version = "0.1.0"
+dependencies = [
+ "android_logger",
+ "gpui-kit",
+ "log",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-gpui",
+]
+
+[[package]]
+name = "android_log-sys"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84521a3cf562bc62942e294181d9eef17eb38ceb8c68677bc49f144e4c3d4f8d"
+
+[[package]]
+name = "android_logger"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbb4e440d04be07da1f1bf44fb4495ebd58669372fe0cffa6e48595ac5bd88a3"
+dependencies = [
+ "android_log-sys",
+ "env_filter",
+ "log",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2023,6 +2052,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_filter"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bf3c259d255ca70051b30e2e95b5446cdb8949ac4cd22c0d7fd634d89f568e2"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
 name = "equator"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2987,12 +3026,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
-
-[[package]]
-name = "gpui-mobile"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "263a29e186a789a72abaa143085555f939060f7570a13a362f8727dcd7ef3064"
 
 [[package]]
 name = "gpui-pre"
@@ -8270,13 +8303,15 @@ dependencies = [
  "anyhow",
  "arboard",
  "futures",
- "gpui-mobile",
  "gpui-pre",
  "gpui-pre-wgpu",
  "image",
+ "jni",
  "log",
+ "ndk",
  "raw-window-handle",
  "tauri",
+ "tauri-plugin",
  "tauri-plugin-clipboard-manager",
  "tauri-runtime-wry",
  "thiserror 2.0.21",

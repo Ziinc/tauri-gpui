@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "gpui-android-demo",
+  "version": "0.1.0",
+  "identifier": "dev.taurigpui.androiddemo",
+  "build": {
+    "frontendDist": "dist"
+  },
+  "app": {
+    "windows": [],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.png"]
+  }
+}

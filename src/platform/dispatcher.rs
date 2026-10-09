@@ -15,9 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::{
-    PlatformDispatcher, Priority, PriorityQueueReceiver, PriorityQueueSender, RunnableVariant,
-};
+use super::queue::PriorityQueue;
+use gpui::{PlatformDispatcher, Priority, RunnableVariant};
 
 /// Wakes the TAO event loop so queued GPUI work gets drained.
 pub(crate) struct LoopWaker {
@@ -78,27 +77,25 @@ impl Ord for Timer {
 
 pub(crate) struct TauriDispatcher {
     main_thread: ThreadId,
-    main_sender: PriorityQueueSender<RunnableVariant>,
-    main_receiver: Mutex<PriorityQueueReceiver<RunnableVariant>>,
+    main_queue: PriorityQueue<RunnableVariant>,
     main_len: AtomicUsize,
-    background_sender: PriorityQueueSender<RunnableVariant>,
+    background_queue: Arc<PriorityQueue<RunnableVariant>>,
     timer_sender: Mutex<mpsc::Sender<(Duration, RunnableVariant)>>,
     waker: Arc<LoopWaker>,
 }
 
 impl TauriDispatcher {
     pub(crate) fn new(waker: Arc<LoopWaker>) -> Self {
-        let (main_sender, main_receiver) = PriorityQueueReceiver::new();
-        let (background_sender, background_receiver) = PriorityQueueReceiver::new();
+        let background_queue = Arc::new(PriorityQueue::<RunnableVariant>::default());
 
         let threads = thread::available_parallelism().map_or(2, |n| n.get().max(2));
         for i in 0..threads {
-            let receiver: PriorityQueueReceiver<RunnableVariant> = background_receiver.clone();
+            let queue = background_queue.clone();
             thread::Builder::new()
                 .name(format!("gpui-worker-{i}"))
                 .spawn(move || {
-                    for runnable in receiver.iter() {
-                        runnable.run();
+                    loop {
+                        queue.pop().run();
                     }
                 })
                 .expect("failed to spawn GPUI worker thread");
@@ -112,10 +109,9 @@ impl TauriDispatcher {
 
         Self {
             main_thread: thread::current().id(),
-            main_sender,
-            main_receiver: Mutex::new(main_receiver),
+            main_queue: PriorityQueue::default(),
             main_len: AtomicUsize::new(0),
-            background_sender,
+            background_queue,
             timer_sender: Mutex::new(timer_sender),
             waker,
         }
@@ -124,7 +120,7 @@ impl TauriDispatcher {
     /// Pops the next main-thread runnable. Must be called on the main thread.
     pub(crate) fn pop_main(&self) -> Option<RunnableVariant> {
         debug_assert!(self.is_main_thread());
-        let runnable = self.main_receiver.lock().unwrap().try_pop().ok().flatten();
+        let runnable = self.main_queue.try_pop();
         if runnable.is_some() {
             self.main_len.fetch_sub(1, Ordering::AcqRel);
         }
@@ -176,20 +172,13 @@ impl PlatformDispatcher for TauriDispatcher {
     }
 
     fn dispatch(&self, runnable: RunnableVariant, priority: Priority) {
-        if self.background_sender.send(priority, runnable).is_err() {
-            log::error!("GPUI background executor is shut down");
-        }
+        self.background_queue.push(priority, runnable);
     }
 
     fn dispatch_on_main_thread(&self, runnable: RunnableVariant, priority: Priority) {
-        match self.main_sender.send(priority, runnable) {
-            Ok(()) => {
-                self.main_len.fetch_add(1, Ordering::AcqRel);
-                self.waker.wake();
-            }
-            // The runnable may wrap a !Send future; never drop it off-thread.
-            Err(error) => std::mem::forget(error),
-        }
+        self.main_queue.push(priority, runnable);
+        self.main_len.fetch_add(1, Ordering::AcqRel);
+        self.waker.wake();
     }
 
     fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant) {

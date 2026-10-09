@@ -34,15 +34,15 @@
 
 mod error;
 
-#[cfg(not(any(target_os = "ios", target_os = "android")))]
+#[cfg(gpui_backend)]
 mod events;
-#[cfg(not(any(target_os = "ios", target_os = "android")))]
+#[cfg(gpui_backend)]
 mod platform;
-#[cfg(not(any(target_os = "ios", target_os = "android")))]
+#[cfg(gpui_backend)]
 mod runtime;
 
-#[cfg(feature = "mobile")]
-pub mod mobile;
+#[cfg(gpui_android)]
+mod android;
 
 pub use error::GpuiError;
 pub use gpui;
@@ -116,19 +116,41 @@ pub fn init(app: &mut tauri::App<Wry>) -> Result<(), GpuiError> {
 
 /// [`init`] with explicit configuration.
 pub fn init_with(app: &mut tauri::App<Wry>, config: GpuiConfig) -> Result<(), GpuiError> {
-    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    #[cfg(gpui_backend)]
     {
         runtime::initialize(app.handle().clone(), config)?;
         app.wry_plugin(hook::GpuiHookBuilder);
+        #[cfg(gpui_android)]
+        app.handle().plugin(android_plugin())?;
         Ok(())
     }
-    #[cfg(any(target_os = "ios", target_os = "android"))]
+    #[cfg(not(gpui_backend))]
     {
         let _ = (app, config);
         Err(GpuiError::UnsupportedOperation {
-            operation: "tauri-plugin-gpui on mobile (see the `mobile` feature docs)",
+            operation: "tauri-plugin-gpui on this target (Android needs the `mobile` feature; iOS is not supported yet)",
         })
     }
+}
+
+/// Registers the `GpuiView` natives, then lets Tauri instantiate the Kotlin
+/// `GpuiPlugin`, which installs the view as the activity's content.
+#[cfg(gpui_android)]
+fn android_plugin() -> tauri::plugin::TauriPlugin<Wry> {
+    tauri::plugin::Builder::new("gpui")
+        .setup(|app, api| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = app;
+            tauri_runtime_wry::wry::prelude::dispatch(move |env, activity, _webview| {
+                tx.send(android::register_natives(env, activity)).ok();
+            });
+            rx.recv()
+                .map_err(|e| e.to_string())?
+                .map_err(|e| format!("registering GpuiView natives: {e}"))?;
+            api.register_android_plugin("app.tauri.gpui", "GpuiPlugin")?;
+            Ok(())
+        })
+        .build()
 }
 
 /// Runs `f` with the shared GPUI `App`.
@@ -136,11 +158,11 @@ pub fn init_with(app: &mut tauri::App<Wry>, config: GpuiConfig) -> Result<(), Gp
 /// Must be called on the main thread and not from inside GPUI code (which
 /// already has a `&mut App`); returns [`GpuiError::Reentrant`] in that case.
 pub fn with_app<R>(f: impl FnOnce(&mut gpui::App) -> R) -> Result<R, GpuiError> {
-    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    #[cfg(gpui_backend)]
     {
         runtime::with(|runtime| runtime.update(f))
     }
-    #[cfg(any(target_os = "ios", target_os = "android"))]
+    #[cfg(not(gpui_backend))]
     {
         let _ = f;
         Err(GpuiError::NotInitialized)
@@ -192,7 +214,7 @@ impl GpuiWindowExt for tauri::Window<Wry> {
         F: FnOnce(&mut gpui::Window, &mut gpui::App) -> gpui::Entity<V> + 'static,
         V: gpui::Render + 'static,
     {
-        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        #[cfg(gpui_backend)]
         {
             runtime::with(|runtime| {
                 runtime.attach(
@@ -204,7 +226,7 @@ impl GpuiWindowExt for tauri::Window<Wry> {
                 )
             })
         }
-        #[cfg(any(target_os = "ios", target_os = "android"))]
+        #[cfg(not(gpui_backend))]
         {
             let _ = (options, root);
             Err(GpuiError::UnsupportedOperation {
@@ -214,18 +236,18 @@ impl GpuiWindowExt for tauri::Window<Wry> {
     }
 
     fn is_gpui_attached(&self) -> bool {
-        #[cfg(not(any(target_os = "ios", target_os = "android")))]
+        #[cfg(gpui_backend)]
         {
             runtime::with(|runtime| Ok(runtime.is_attached(self.label()))).unwrap_or(false)
         }
-        #[cfg(any(target_os = "ios", target_os = "android"))]
+        #[cfg(not(gpui_backend))]
         {
             false
         }
     }
 }
 
-#[cfg(not(any(target_os = "ios", target_os = "android")))]
+#[cfg(gpui_backend)]
 mod hook {
     use tauri::EventLoopMessage;
     use tauri_runtime_wry::{

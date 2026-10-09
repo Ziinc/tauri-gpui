@@ -1,6 +1,9 @@
 //! The shared GPUI runtime: one GPUI `App` per Tauri application, living on
 //! the Tauri/TAO event-loop thread, plus the registry of attached windows.
 
+#[cfg(gpui_android)]
+mod android;
+
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
@@ -12,9 +15,12 @@ use std::{
 
 use gpui::{
     AnyWindowHandle, App, Application, ApplicationHandle, Bounds, QuitMode, WindowBounds,
-    WindowOptions, point, px,
+    WindowOptions,
 };
+#[cfg(not(gpui_android))]
+use gpui::{point, px};
 use gpui_wgpu::{CosmicTextSystem, WgpuRenderer, WgpuSurfaceConfig};
+#[cfg(not(gpui_android))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use tauri::{AppHandle, EventLoopMessage, Wry};
 use tauri_runtime_wry::{
@@ -40,6 +46,15 @@ const TASK_BUDGET: Duration = Duration::from_millis(8);
 
 type OpenWindow = Box<dyn FnOnce(&mut App, WindowOptions) -> anyhow::Result<AnyWindowHandle>>;
 
+/// Everything `attach` needs to know about the native surface.
+pub(crate) struct SurfaceParams {
+    raw: RawWindow,
+    physical_size: gpui::Size<gpui::DevicePixels>,
+    scale_factor: f32,
+    origin: gpui::Point<gpui::Pixels>,
+    appearance: gpui::WindowAppearance,
+}
+
 struct Mount {
     inner: Rc<WindowInner>,
     options: WindowOptions,
@@ -58,6 +73,8 @@ pub(crate) struct Runtime {
     deferred: Rc<RefCell<Vec<Box<dyn FnOnce()>>>>,
     depth: Cell<usize>,
     proxy_installed: Cell<bool>,
+    #[cfg(gpui_android)]
+    android: android::AndroidState,
 }
 
 thread_local! {
@@ -108,9 +125,7 @@ pub(crate) fn initialize(app: AppHandle<Wry>, config: GpuiConfig) -> Result<(), 
         }
     })));
     let dispatcher = Arc::new(TauriDispatcher::new(waker.clone()));
-    let text_system = Arc::new(CosmicTextSystem::new(
-        config.font_fallback.as_deref().unwrap_or(default_font()),
-    ));
+    let text_system = new_text_system(config.font_fallback.as_deref().unwrap_or(default_font()));
     let platform = Rc::new(TauriPlatform::new(app, dispatcher.clone(), text_system));
 
     let mut application =
@@ -132,7 +147,11 @@ pub(crate) fn initialize(app: AppHandle<Wry>, config: GpuiConfig) -> Result<(), 
         deferred: Rc::default(),
         depth: Cell::new(0),
         proxy_installed: Cell::new(false),
+        #[cfg(gpui_android)]
+        android: android::AndroidState::default(),
     }));
+    #[cfg(gpui_android)]
+    crate::android::set_waker(runtime.waker.clone());
     if let Some(on_launch) = config.on_launch {
         runtime.update(on_launch)?;
     }
@@ -145,8 +164,23 @@ fn is_dummy(window_id: &TaoWindowId) -> bool {
     *window_id == unsafe { TaoWindowId::dummy() }
 }
 
+#[cfg(not(gpui_android))]
+fn new_text_system(fallback: &str) -> Arc<CosmicTextSystem> {
+    Arc::new(CosmicTextSystem::new(fallback))
+}
+
+#[cfg(gpui_android)]
+fn new_text_system(fallback: &str) -> Arc<CosmicTextSystem> {
+    // fontdb has no Android system font discovery.
+    let text_system = Arc::new(CosmicTextSystem::new_without_system_fonts(fallback));
+    android::load_system_fonts(&*text_system);
+    text_system
+}
+
 fn default_font() -> &'static str {
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "android") {
+        "Roboto"
+    } else if cfg!(target_os = "macos") {
         "Helvetica Neue"
     } else if cfg!(target_os = "windows") {
         "Segoe UI"
@@ -197,7 +231,19 @@ impl Runtime {
                 reason: "the window hosts a WebView; GPUI and WebView content cannot share a window",
             });
         }
+        #[cfg(gpui_android)]
+        {
+            self.attach_android(window, options, open)
+        }
+        #[cfg(not(gpui_android))]
+        {
+            let params = Self::desktop_surface(window)?;
+            self.attach_surface(window, options, open, params)
+        }
+    }
 
+    #[cfg(not(gpui_android))]
+    fn desktop_surface(window: &tauri::Window<Wry>) -> Result<SurfaceParams, GpuiError> {
         let scale_factor = window.scale_factor()? as f32;
         let physical = window.inner_size()?;
         let physical_size = events::physical_size(physical.width.max(1), physical.height.max(1));
@@ -226,6 +272,31 @@ impl Runtime {
                 .map_err(|e| GpuiError::PlatformInitialization(format!("display handle: {e}")))?
                 .as_raw(),
         };
+        Ok(SurfaceParams {
+            raw,
+            physical_size,
+            scale_factor,
+            origin,
+            appearance,
+        })
+    }
+
+    /// Creates the renderer for a prepared native surface and mounts GPUI.
+    fn attach_surface(
+        &self,
+        window: &tauri::Window<Wry>,
+        options: GpuiOptions,
+        open: OpenWindow,
+        params: SurfaceParams,
+    ) -> Result<(), GpuiError> {
+        let SurfaceParams {
+            raw,
+            physical_size,
+            scale_factor,
+            origin,
+            appearance,
+        } = params;
+        let label = window.label().to_string();
         let renderer = WgpuRenderer::new(
             self.platform.gpu_context.clone(),
             &raw,
@@ -249,7 +320,7 @@ impl Runtime {
         let inner = Rc::new(WindowInner {
             label: label.clone(),
             tauri_window: window.clone(),
-            raw,
+            raw: Cell::new(raw),
             state: RefCell::new(default_window_state(
                 physical_size,
                 scale_factor,
@@ -368,6 +439,11 @@ impl Runtime {
         }
         if self.depth.get() > 0 {
             // TAO never re-enters its callback, but be defensive.
+            return false;
+        }
+        // On Android the GpuiView, not TAO, reports the surface and input.
+        #[cfg(gpui_android)]
+        if matches!(event, Event::WindowEvent { .. } | Event::RedrawRequested(_)) {
             return false;
         }
 
@@ -492,6 +568,9 @@ impl Runtime {
             return;
         }
         self.waker.clear();
+
+        #[cfg(gpui_android)]
+        self.pump_android();
 
         let start = Instant::now();
         {

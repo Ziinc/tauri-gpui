@@ -113,7 +113,32 @@ Everything else does one of three things:
 | Linux (X11) | Verified end to end by the screenshot test below (Xvfb, Mesa lavapipe Vulkan). |
 | Linux (Wayland) | Builds. TAO hands out Wayland handles, but the GTK subsurface interaction has not been tested. |
 | macOS, Windows | Implemented against the same cross-platform APIs but **not yet built or run**. On Windows, `tauri-runtime-wry` paints window-only windows with softbuffer, which may conflict with the DX12 swapchain. |
-| iOS, Android (`mobile` feature) | The `mobile` feature pulls in `gpui-mobile` and is off by default, so desktop builds never compile it. The published `gpui-mobile` 0.1 does not yet include its `Platform` implementations, so `init`/`attach_gpui` return `UnsupportedOperation` on mobile targets. The public API is the same as on desktop. |
+| Android (`mobile` feature) | Builds for `aarch64`/`x86_64`. CI drives [`examples/android-demo`](examples/android-demo) on an emulator (taps, scrolling, soft keyboard, background and resume). See [Android](#android). |
+| iOS | Not implemented: `init` returns `UnsupportedOperation`. |
+
+## Android
+
+Enable the `mobile` feature. The Android dependencies are target-gated, so desktop builds are unaffected:
+
+```toml
+tauri-plugin-gpui = { version = "0.1", features = ["mobile"] }
+```
+
+The app code is the same as on desktop: call `init` in `setup`, build a `tauri::WindowBuilder` window (no WebView) and attach GPUI to it. Mark the entry point with `#[cfg_attr(mobile, tauri::mobile_entry_point)]` as usual.
+
+Tauri's Android activity has no native surface, so the plugin ships a small Android library (`android/`, picked up by `tauri android build`). It installs `GpuiView`, a `SurfaceView`, as the activity's content view. GPUI renders into its surface through wgpu (Vulkan, or GLES as a fallback).
+
+| Concern | Implementation |
+|---|---|
+| Threads | View callbacks run on the Android UI thread. TAO, and with it GPUI, runs on its own thread. Each callback is queued and the TAO loop is woken. `surfaceDestroyed` blocks until the renderer has released the surface. |
+| Surface lifecycle | The mount waits for the first surface. When the app goes to the background the surface is unconfigured, and when it returns the surface is replaced. The device, atlas and GPUI window survive. |
+| Touch | Raw `MotionEvent`s become GPUI `PlatformInput::Touch`. GPUI's gesture arena turns them into taps (clicks), pans and flings (scrolling with Android `OverScroller` physics) and long presses. |
+| Keyboard | Focus on a GPUI text input shows the soft keyboard; losing focus hides it. Typed characters arrive as key presses, so key bindings still see them. Longer commits and composition go through GPUI's input handler. Hardware keys map to GPUI key names. |
+| Insets | The app draws edge to edge. System bars, display cutouts and the keyboard are reported as `WindowInsets`; use `window.fully_visible_bounds()` to keep content clear of them. |
+| Back | `set_back_enabled(true)` routes the back button and gesture to GPUI's back handler; otherwise back moves the app to the background. |
+| Appearance, fonts, clipboard | Dark mode follows the system. Roboto, Droid Sans Mono and Noto Color Emoji are loaded from `/system/fonts`. Plain-text clipboard. |
+
+One GPUI window per app is supported on Android.
 
 ## Example and screenshot testing
 
@@ -163,4 +188,5 @@ Without a display, `cargo test` skips the suite.
 - IME positioning: it has no Tauri core API and would need a TAO change.
 - Accessibility (AccessKit through Tauri windows).
 - Building and testing on macOS and Windows.
-- Mobile, once `gpui-mobile` publishes its platform layer.
+- iOS.
+- Android: IME composition beyond committed text, multiple GPUI windows, and accessibility.
