@@ -32,8 +32,8 @@ jobs:
       - run: cargo fmt --manifest-path examples/gpui-demo/Cargo.toml --check
       - run: cargo clippy --manifest-path examples/gpui-demo/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path examples/gpui-demo/Cargo.toml
-      - name: Chaos/integration tests (real Tauri event loop on Xvfb)
-        run: scripts/chaos-test.sh
+      - name: Integration/chaos tests (real Tauri event loop on Xvfb)
+        run: scripts/integration-test.sh
         timeout-minutes: 15
       - name: Screenshot test (examples/gpui-demo)
         run: examples/gpui-demo/scripts/screenshot-test.sh target/gpui-demo-screenshots
