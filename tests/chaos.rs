@@ -18,7 +18,7 @@ use std::{
     process::Command,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -488,6 +488,15 @@ fn api_contract(h: &mut Harness) {
     for (name, passed, detail) in PRE_INIT.lock().unwrap().drain(..) {
         h.check(name, passed, detail);
     }
+
+    // Effects queued inside with_app (here a `cx.defer`) must run on their
+    // own, without waiting for unrelated event-loop activity (no window
+    // exists yet that could trigger a GPUI update).
+    let ran = Arc::new(AtomicBool::new(false));
+    let r = ran.clone();
+    h.gpui(move |cx| cx.defer(move |_| r.store(true, Ordering::SeqCst)));
+    let flushed = h.wait(Duration::from_secs(3), |_| ran.load(Ordering::SeqCst));
+    h.check("effects queued in with_app are flushed", flushed, "");
 
     let off_thread = tauri_plugin_gpui::with_app(|_| ()).err();
     h.check(
