@@ -17,6 +17,10 @@ adb() { timeout 90 "$ADB_BIN" "$@"; }
 timeout 300 "$ADB_BIN" wait-for-device
 adb install -r -g "$APK"
 adb logcat -c
+# Keep a live capture so the logs survive an emulator crash.
+"$ADB_BIN" logcat > "$OUT/logcat-stream.txt" 2>&1 &
+LOGCAT_PID=$!
+trap 'kill "$LOGCAT_PID" 2>/dev/null || true' EXIT
 adb shell am start -n "$PKG/.MainActivity"
 
 failures=0
@@ -34,7 +38,7 @@ wait_for() {
   return 1
 }
 
-wait_for "layout top=" 120 || { log; shot 00-no-layout; adb logcat -d > "$OUT/logcat-full.txt"; exit 1; }
+wait_for "layout top=" 120 || { log; shot 00-no-layout || true; adb logcat -d > "$OUT/logcat-full.txt" || true; exit 1; }
 sleep 2
 shot 01-launched
 
