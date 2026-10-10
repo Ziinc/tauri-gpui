@@ -273,6 +273,15 @@ impl Runtime {
                     .borrow_mut()
                     .long_press(point(px(x / scale), px(y / scale)));
             }
+            ViewEvent::HandleDrag {
+                handle,
+                phase,
+                position,
+            } => {
+                if let Some(inner) = &inner {
+                    self.handle_drag(inner, handle, phase, position);
+                }
+            }
             ViewEvent::Back => {
                 // The app-level handler (`tauri_plugin_gpui::on_back`) wins;
                 // otherwise GPUI's per-window back handler, if one is set.

@@ -124,10 +124,21 @@ wait_for 'submitted text="hello"' 20 || true
 sleep 1
 shot 05-submitted
 
-# Long press the (focused, now empty) input: Android's floating selection
-# toolbar appears. "Select all" is always offered; Paste and Autofill depend on
-# the clipboard and the autofill service, so they are not asserted.
+# ui_center <text> prints the centre "x y" of the UI node with this text or
+# content-desc in the last dump (see `ui_has`).
+ui_center() {
+  sed -nE "s/.*(text|content-desc)=\"$1\"[^>]*bounds=\"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]\".*/\2 \3 \4 \5/p" "$OUT/ui-dump.xml" \
+    | head -1 | awk '{printf "%d %d", ($1 + $3) / 2, ($2 + $4) / 2}'
+}
+
+# The demo clears its input on submit: type a word, then long press the
+# (focused) input. Android's floating selection toolbar appears, and so does
+# the native insertion handle under the caret. "Select all" is always offered;
+# Paste and Autofill depend on the clipboard and the autofill service, so they
+# are not asserted.
 dismiss_dialogs
+adb shell input text "world"
+sleep 1
 adb shell input swipe "$x" "$input_y" "$x" "$input_y" 1200
 wait_for_logcat "selection toolbar shown" 20 || true
 sleep 1
@@ -138,7 +149,27 @@ else
   echo "FAIL: the selection toolbar does not show \"Select all\" after a long press"
   failures=$((failures + 1))
 fi
-# Touching elsewhere dismisses it.
+wait_for_logcat "selection handles shown" 20 || true
+
+# Selecting everything puts the native handles on both ends of the text. The
+# end handle is then dragged left: gpui-kit's input cannot place the selection
+# from outside yet, so this only checks that the drag is harmless.
+if ui_has "Select all" 5; then
+  read -r select_x select_y <<<"$(ui_center "Select all")"
+  adb shell input tap "$select_x" "$select_y" || true
+  wait_for_logcat "selection range handles shown" 20 || true
+  sleep 1
+  shot 05d-selection-handles
+  if ui_has "Selection end" 10; then
+    read -r handle_x handle_y <<<"$(ui_center "Selection end")"
+    adb shell input swipe "$handle_x" "$handle_y" $((handle_x - density / 8)) "$handle_y" 400 || true
+    sleep 1
+    shot 05e-handle-dragged
+  else
+    echo "NOTE: the end selection handle is not in the UI dump"
+  fi
+fi
+# Touching elsewhere dismisses the toolbar.
 adb shell input tap "$x" $((screen_h * 7 / 10))
 sleep 1
 if ui_has "Select all" 3; then
