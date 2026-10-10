@@ -171,7 +171,7 @@ npm run tauri -- ios dev    # pick a simulator or a connected device
 
 `scripts/ios-smoke.sh` is the CI check: it installs a simulator build, then asserts on the app's console while switching dark mode, backgrounding the app, and relaunching it with `--focus-input` to check that the keyboard inset animates.
 
-One GPUI window per app is supported on iOS. There is no system back action, so `on_back`/`set_back_enabled` do nothing.
+One GPUI window per app is supported on iOS; attaching GPUI to a second window returns `GpuiError::NotEligible`. Multiple GPUI windows on iOS (stacked windows on iPhone, multi-scene on iPad) are out of scope for now: an app should navigate within its one GPUI window instead. There is no system back action, so `on_back`/`set_back_enabled` do nothing.
 
 As on Android, debug builds must embed GPUI assets (`rust-embed`'s `debug-embed` with gpui-kit).
 
@@ -250,4 +250,4 @@ Without a display, `cargo test` skips the suite.
 - Accessibility (AccessKit through Tauri windows).
 - Building and testing on macOS and Windows.
 - Android: IME composition beyond committed text, multiple GPUI windows, and accessibility.
-- iOS: running on a physical device, IME composition (marked text, e.g. Chinese and Japanese input), multiple GPUI windows, and accessibility.
+- iOS: running on a physical device, IME composition (marked text, e.g. Chinese and Japanese input), and accessibility. Multiple GPUI windows are out of scope for now (see [iOS](#ios)).
