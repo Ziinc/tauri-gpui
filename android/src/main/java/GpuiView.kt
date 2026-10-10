@@ -129,12 +129,10 @@ class GpuiView(private val activity: Activity) : SurfaceView(activity), SurfaceH
      * which time the app's plugins are registered; plugins registered later
      * are not loaded.
      *
-     * The plugins get a [DetachedWebView], not a real one: creating the
-     * process's first WebView registers the WebView provider as a package
-     * dependency, and Android then relaunches the activity, which GPUI does
-     * not survive. The stand-in is never attached or initialised, so a plugin
-     * that drives the WebView (evaluating JS, say) would fail. None of the
-     * plugins in use do.
+     * The plugins get a [DetachedWebView], not a real one, so Chromium is
+     * never started just to satisfy `load`'s signature. The stand-in is never
+     * attached or initialised, so a plugin that drives the WebView
+     * (evaluating JS, say) would fail. None of the plugins in use do.
      */
     fun loadPlugins() {
         activity.runOnUiThread {
