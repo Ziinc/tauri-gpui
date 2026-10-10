@@ -553,14 +553,22 @@ fn with_view(f: impl FnOnce(&InputView)) {
 }
 
 pub(crate) fn show_keyboard() {
-    log::debug!("tauri-plugin-gpui: showing the software keyboard");
+    let installed = VIEW.with(|slot| slot.borrow().is_some());
+    log::debug!(
+        "tauri-plugin-gpui: showing the software keyboard (input view installed: {installed})"
+    );
     with_view(|view| {
-        if !view.isFirstResponder() && !view.becomeFirstResponder() {
-            log::warn!(
-                "tauri-plugin-gpui: the input view could not become first responder (in window: {}, key: {})",
-                view.window().is_some(),
-                view.window().is_some_and(|window| window.isKeyWindow())
-            );
+        let was = view.isFirstResponder();
+        let became = was || view.becomeFirstResponder();
+        let window = view.window();
+        log::debug!(
+            "tauri-plugin-gpui: first responder was={was} now={} (in window: {}, key: {})",
+            view.isFirstResponder(),
+            window.is_some(),
+            window.as_ref().is_some_and(|window| window.isKeyWindow())
+        );
+        if !became {
+            log::warn!("tauri-plugin-gpui: the input view could not become first responder");
         }
     });
 }
