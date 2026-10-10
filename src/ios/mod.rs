@@ -558,6 +558,13 @@ pub(crate) fn show_keyboard() {
         "tauri-plugin-gpui: showing the software keyboard (input view installed: {installed})"
     );
     with_view(|view| {
+        // UIKit only shows the keyboard for a responder in the key window,
+        // and TAO does not always make its window key.
+        if let Some(window) = view.window()
+            && !window.isKeyWindow()
+        {
+            window.makeKeyWindow();
+        }
         let was = view.isFirstResponder();
         let became = was || view.becomeFirstResponder();
         let window = view.window();
