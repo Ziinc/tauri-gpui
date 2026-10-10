@@ -40,7 +40,9 @@ jobs:
           ditto "$app" "$RUNNER_TEMP/ios-demo.app"
       - name: Smoke test on the simulator
         timeout-minutes: 20
-        run: examples/ios-demo/scripts/ios-smoke.sh "$RUNNER_TEMP/ios-demo.app" target/ios-smoke
+        run: |
+          command -v axe >/dev/null || brew install cameroncooke/axe/axe
+          examples/ios-demo/scripts/ios-smoke.sh "$RUNNER_TEMP/ios-demo.app" target/ios-smoke
       - uses: actions/upload-artifact@v4
         if: always()
         with:

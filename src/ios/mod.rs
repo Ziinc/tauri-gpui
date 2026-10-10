@@ -12,6 +12,7 @@
 //! the keyboard posts its frame notification right away), so every callback
 //! becomes a [`ViewEvent`] queued for [`crate::runtime::Runtime::drain`].
 
+pub(crate) mod a11y;
 mod cgl;
 pub(crate) mod keys;
 
@@ -61,6 +62,12 @@ pub(crate) enum ViewEvent {
         dark: bool,
     },
     Lifecycle(AppLifecyclePhase),
+    /// VoiceOver asked to scroll by a page around a node.
+    A11yScroll {
+        action: gpui::accesskit::Action,
+        /// The node's bounds, in physical pixels.
+        bounds: gpui::accesskit::Rect,
+    },
 }
 
 #[derive(Default)]
@@ -134,6 +141,29 @@ define_class!(
         fn trait_collection_did_change(&self, previous: Option<&UITraitCollection>) {
             let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
             self.check_appearance();
+        }
+
+        /// VoiceOver: the view is a container for GPUI's AccessKit nodes,
+        /// see `a11y`.
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element(&self) -> bool {
+            a11y::with_adapter(|adapter| adapter.is_accessibility_element()).unwrap_or(false)
+        }
+
+        #[unsafe(method(accessibilityElements))]
+        fn accessibility_elements(&self) -> *mut AnyObject {
+            a11y::with_adapter(|adapter| adapter.accessibility_elements().cast())
+                .unwrap_or(std::ptr::null_mut())
+        }
+
+        #[unsafe(method(accessibilityHitTest:))]
+        fn accessibility_hit_test(&self, point: CGPoint) -> *mut AnyObject {
+            let point = accesskit_ios::CGPoint {
+                x: point.x,
+                y: point.y,
+            };
+            a11y::with_adapter(|adapter| adapter.hit_test(point).cast())
+                .unwrap_or(std::ptr::null_mut())
         }
 
         /// Target of the iOS 17+ trait registration, see `install`.
@@ -379,10 +409,20 @@ pub(crate) unsafe fn install(view: *mut std::ffi::c_void) {
 
 /// Removes the input view (the attached window was destroyed).
 pub(crate) fn uninstall() {
+    a11y::reset();
     if let Some(input) = VIEW.with(|slot| slot.borrow_mut().take()) {
         unsafe { NSNotificationCenter::defaultCenter().removeObserver(&input) };
         input.resignFirstResponder();
         input.removeFromSuperview();
+    }
+}
+
+/// Connects GPUI's accessibility callbacks to the input view.
+pub(crate) fn init_a11y(callbacks: gpui::A11yCallbacks) {
+    let view = VIEW.with(|slot| slot.borrow().clone());
+    match view {
+        Some(view) => a11y::init(&view, callbacks),
+        None => log::warn!("tauri-plugin-gpui: no input view to host the accessibility tree"),
     }
 }
 

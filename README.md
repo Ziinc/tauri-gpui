@@ -103,7 +103,7 @@ Everything else does one of three things:
 - **Explicitly unsupported:** these return `GpuiError::UnsupportedOperation` through `anyhow`, or are logged at debug level when the GPUI signature has no error channel.
   - Windows: `open_window` outside `attach_gpui`, non-normal window kinds, background appearance (blur/transparency).
   - System integration: credentials, menus and dock menus, path prompts (use `tauri-plugin-dialog`), `open_url` (use `tauri-plugin-opener`), URL schemes, `reveal_path`/`open_with_system`, app hide/unhide, idle-sleep prevention.
-  - Input and accessibility: IME candidate positioning, accessibility (AccessKit).
+  - Input and accessibility: IME candidate positioning, accessibility (AccessKit) everywhere but iOS.
 - **Handled by GPUI's built-in fallback:** prompts (`PlatformWindow::prompt` returns `None`).
 
 ## Platform status
@@ -156,6 +156,7 @@ Unlike Android, TAO already gives each iOS window a native `UIView`, so no Swift
 | Keyboard | Focus on a GPUI text input makes `GpuiInputView` the first responder (`UIKeyInput`), which shows the software keyboard; losing focus hides it. Typed characters arrive as key presses, so key bindings still see them. While a text input has focus, a hardware keyboard also delivers navigation and function keys and command/control shortcuts as keystrokes. Autocorrection, autocapitalization and smart punctuation are off. |
 | Insets | The safe area (notch, Dynamic Island, home indicator) and the keyboard are reported as `WindowInsets`; use `window.fully_visible_bounds()` to keep content clear of them. |
 | Lifecycle | `UIApplication` notifications map to GPUI's `Inactive`, `Background`, `Foreground` and `Active` phases, and the window turns hidden and visible with them. |
+| Accessibility | GPUI's AccessKit tree is exposed to VoiceOver, Switch Control and Speak Screen through `accesskit_ios`, hosted by `GpuiInputView`. It is built only while one of them is running. Give elements an `.id(…)` plus a `.role(…)` (and `.aria_label(…)` when they have no text node) to appear in it. Double tap clicks, and VoiceOver's three-finger scroll becomes a page-sized scroll-wheel event at the focused element, because GPUI does not report which elements scroll. |
 | Appearance, fonts, clipboard | Dark mode follows the system. Helvetica Neue (the default), SF, Menlo and Apple Color Emoji are loaded from `/System/Library/Fonts`. Plain-text clipboard through `UIPasteboard`. |
 
 [`examples/ios-demo`](examples/ios-demo) is a touch-first gpui-kit app (taps, scrolling, the keyboard, safe area, dark mode). On a Mac with Xcode:
@@ -167,7 +168,7 @@ npm run tauri -- ios init
 npm run tauri -- ios dev    # pick a simulator or a connected device
 ```
 
-`scripts/ios-smoke.sh` is the CI check: it installs a simulator build, then asserts on the app's console while switching dark mode and backgrounding the app.
+`scripts/ios-smoke.sh` is the CI check: it installs a simulator build, then asserts on the app's console while switching dark mode and backgrounding the app, and reads the accessibility tree with [AXe](https://github.com/cameroncooke/AXe).
 
 One GPUI window per app is supported on iOS. There is no system back action, so `on_back`/`set_back_enabled` do nothing.
 
@@ -245,7 +246,7 @@ Without a display, `cargo test` skips the suite.
 
 - GPUI versioning: the crate tracks the `gpui-pre` snapshots, the same ones gpui-kit tracks, until upstream publishes a `gpui` with a public `Platform`.
 - IME positioning: it has no Tauri core API and would need a TAO change.
-- Accessibility (AccessKit through Tauri windows).
+- Accessibility (AccessKit through Tauri windows) on desktop and Android.
 - Building and testing on macOS and Windows.
 - Android: IME composition beyond committed text, multiple GPUI windows, and accessibility.
-- iOS: running on a physical device, IME composition (marked text, e.g. Chinese and Japanese input), keyboard inset animation (insets jump to the keyboard's final frame), multiple GPUI windows, and accessibility.
+- iOS: running on a physical device, IME composition (marked text, e.g. Chinese and Japanese input), keyboard inset animation (insets jump to the keyboard's final frame), multiple GPUI windows, and editing text with VoiceOver (the rotor and moving by character need `UITextInput`).

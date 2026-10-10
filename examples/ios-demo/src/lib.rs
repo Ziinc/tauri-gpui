@@ -3,9 +3,10 @@
 //!
 //! It exercises what a phone needs from the platform layer: taps (the
 //! counter), drag and fling scrolling (the list), the software keyboard (the
-//! input), safe-area insets (the padded header) and dark mode. Every
-//! interaction is logged to stderr under the `ios-demo` target so the CI
-//! smoke test can assert on the simulator's console.
+//! input), safe-area insets (the padded header), dark mode and VoiceOver (the
+//! labelled title, counter and rows). Every interaction is logged to stderr
+//! under the `ios-demo` target so the CI smoke test can assert on the
+//! simulator's console.
 
 use gpui_kit::{
     component::{
@@ -134,11 +135,20 @@ impl Render for Demo {
                             .justify_between()
                             .child(
                                 div()
+                                    .id("title")
+                                    .role(Role::Heading)
+                                    .aria_label("GPUI on iOS")
                                     .text_xl()
                                     .font_weight(FontWeight::BOLD)
                                     .child("GPUI on iOS"),
                             )
-                            .child(format!("Taps: {}", self.taps)),
+                            .child(
+                                div()
+                                    .id("taps")
+                                    .role(Role::Label)
+                                    .aria_label(format!("Taps: {}", self.taps))
+                                    .child(format!("Taps: {}", self.taps)),
+                            ),
                     )
                     .child(
                         Button::new("tap")
@@ -169,11 +179,15 @@ impl Render for Demo {
             .child(
                 div()
                     .id("rows")
+                    .role(Role::List)
                     .flex_1()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .children((1..=ROWS).map(|i| {
                         div()
+                            .id(("row", i))
+                            .role(Role::ListItem)
+                            .aria_label(format!("Row {i}"))
                             .h(px(56.))
                             .px_4()
                             .flex()

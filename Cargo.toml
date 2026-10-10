@@ -26,7 +26,7 @@ default = []
 # Android and iOS support (GPUI platform layers for a SurfaceView and a UIView).
 # Off by default; the mobile dependencies are also target-gated, so desktop
 # builds never compile them either way.
-mobile = ["dep:jni", "dep:ndk", "dep:objc2", "dep:objc2-core-foundation", "dep:objc2-foundation", "dep:objc2-ui-kit"]
+mobile = ["dep:jni", "dep:ndk", "dep:objc2", "dep:objc2-core-foundation", "dep:objc2-foundation", "dep:objc2-ui-kit", "dep:accesskit_ios"]
 
 [dependencies]
 anyhow = "1"
@@ -61,6 +61,8 @@ objc2 = { version = "0.6", optional = true }
 objc2-core-foundation = { version = "0.3", optional = true }
 objc2-foundation = { version = "0.3", optional = true }
 objc2-ui-kit = { version = "0.3", optional = true }
+# VoiceOver. 0.1 is the release on GPUI's `accesskit` 0.24 (0.2 moved to 0.25).
+accesskit_ios = { version = "0.1", optional = true }
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
