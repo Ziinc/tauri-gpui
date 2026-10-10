@@ -10,7 +10,9 @@ use std::{
 
 use gpui::{
     AppLifecyclePhase, Edges, KeyDownEvent, KeyUpEvent, PlatformInput, PlatformTextSystem,
-    TouchPhase, WindowAppearance, WindowInsets, px,
+    ScrollDelta, ScrollWheelEvent, TouchPhase, WindowAppearance, WindowInsets,
+    accesskit::{Action, Rect},
+    point, px,
 };
 use gpui_wgpu::{WgpuContext, wgpu};
 use raw_window_handle::RawWindowHandle;
@@ -228,6 +230,11 @@ impl Runtime {
                     mobile::press(inner, mobile::named("backspace"));
                 }
             }
+            ViewEvent::A11yScroll { action, bounds } => {
+                if let Some(inner) = inner {
+                    a11y_scroll(inner, action, bounds);
+                }
+            }
             ViewEvent::Key {
                 down,
                 key: HardwareKey(keystroke),
@@ -295,6 +302,32 @@ impl Runtime {
             _ => false,
         }
     }
+}
+
+/// Share of the window a VoiceOver scroll moves, like a page in `UIScrollView`.
+const A11Y_PAGE: f32 = 0.8;
+
+/// Scrolls by a page at the node VoiceOver scrolled from. GPUI delivers the
+/// wheel event to the scrollable elements under that point.
+fn a11y_scroll(inner: &WindowInner, action: Action, bounds: Rect) {
+    let scale = inner.state.borrow().scale_factor as f64;
+    let size = inner.logical_size();
+    let (x, y) = (size.width * A11Y_PAGE, size.height * A11Y_PAGE);
+    // Wheel deltas move the content: a negative y reveals what is below.
+    let delta = match action {
+        Action::ScrollDown => point(px(0.), -y),
+        Action::ScrollUp => point(px(0.), y),
+        Action::ScrollRight => point(-x, px(0.)),
+        Action::ScrollLeft => point(x, px(0.)),
+        _ => return,
+    };
+    let center = |a: f64, b: f64| px(((a + b) / 2. / scale) as f32);
+    inner.handle_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+        position: point(center(bounds.x0, bounds.x1), center(bounds.y0, bounds.y1)),
+        delta: ScrollDelta::Pixels(delta),
+        modifiers: Default::default(),
+        touch_phase: TouchPhase::Moved,
+    }));
 }
 
 #[cfg(test)]

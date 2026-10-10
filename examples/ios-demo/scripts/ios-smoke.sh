@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Installs examples/ios-demo on an iPhone simulator and checks, from the app's
-# console, that GPUI attaches and renders, honours the safe area, follows dark
-# mode, and survives a trip to the background. Screenshots go to the output
-# directory.
+# console, that GPUI attaches and renders, honours the safe area, exposes its
+# accessibility tree, follows dark mode, and survives a trip to the background.
+# Screenshots go to the output directory.
+#
+# The accessibility check reads the simulator's accessibility tree with AXe
+# (`brew install cameroncooke/axe/axe`); without it the check is skipped,
+# except on CI.
 #
 #   scripts/ios-smoke.sh <path/to/app> [output-dir]
 set -euo pipefail
@@ -89,6 +93,27 @@ top=$(grep -oE 'layout top=[0-9.]+' "$log" | tail -1 | cut -d= -f2)
 awk -v top="$top" 'BEGIN { exit !(top > 0) }' || fail "expected a top safe-area inset, got $top"
 sleep 2
 xcrun simctl io "$device" screenshot "$out/light.png" >/dev/null
+
+# Reading the tree activates the plugin's AccessKit adapter; GPUI sends the
+# real tree with its next frame, so poll until the demo's labels show up.
+if command -v axe >/dev/null; then
+  labelled=
+  for ((i = 0; i < 30; i++)); do
+    axe describe-ui --udid "$device" >"$out/a11y.json" 2>"$out/a11y.err" || true
+    if grep -q '"GPUI on iOS"' "$out/a11y.json" && grep -q '"Taps: 0"' "$out/a11y.json" &&
+      grep -q '"Row 1"' "$out/a11y.json"; then
+      labelled=1
+      break
+    fi
+    sleep 1
+  done
+  [ -n "$labelled" ] || fail "the accessibility tree lacks the demo's labels (see a11y.json)"
+  echo "ios-smoke: accessibility tree has the demo's labels"
+elif [ -n "${CI:-}" ]; then
+  fail "axe is not installed"
+else
+  echo "ios-smoke: axe not found, skipping the accessibility check" >&2
+fi
 
 xcrun simctl ui "$device" appearance dark
 wait_for 'appearance dark=true' 30

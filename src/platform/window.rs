@@ -709,6 +709,16 @@ impl PlatformWindow for TauriGpuiWindow {
         }
     }
 
+    #[cfg(gpui_ios)]
+    fn a11y_init(&self, callbacks: gpui::A11yCallbacks) {
+        crate::ios::init_a11y(callbacks);
+    }
+
+    #[cfg(gpui_ios)]
+    fn a11y_tree_update(&self, tree_update: gpui::accesskit::TreeUpdate) {
+        crate::ios::a11y::tree_update(tree_update);
+    }
+
     #[cfg(target_os = "windows")]
     fn get_raw_handle(&self) -> windows::Win32::Foundation::HWND {
         match self.inner.raw.get().window {
