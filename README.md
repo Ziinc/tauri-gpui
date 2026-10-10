@@ -152,10 +152,12 @@ Unlike Android, TAO already gives each iOS window a native `UIView`, so no Swift
 
 | Concern | Implementation |
 |---|---|
-| Threads | UIKit, TAO and GPUI share the main thread. UIKit callbacks are still queued and drained by the event loop, because UIKit calls back synchronously, sometimes from inside a GPUI update. |
+| Threads | UIKit, TAO and GPUI share the main thread. UIKit callbacks are queued and drained by the event loop, because UIKit calls back synchronously, sometimes from inside a GPUI update. Keyboard edits and text queries are the exception: they drain the queue and reach GPUI's input handler right away, unless GPUI is mid-update, in which case edits are queued and queries are answered from what the keyboard last saw. |
 | Surface | The view fills the window; the Metal layer follows its bounds and scale. While the app is in the background no frames are rendered (iOS terminates apps that use the GPU there). |
 | Touch | TAO's touches become GPUI `PlatformInput::Touch`. GPUI's gesture arena turns them into taps, pans and flings (with `UIScrollView` deceleration) and long presses. |
-| Keyboard | Focus on a GPUI text input makes `GpuiInputView` the first responder (`UIKeyInput`), which shows the software keyboard; losing focus hides it. Typed characters arrive as key presses, so key bindings still see them. While a text input has focus, a hardware keyboard also delivers navigation and function keys and command/control shortcuts as keystrokes. Autocorrection, autocapitalization and smart punctuation are off. |
+| Keyboard | Focus on a GPUI text input makes `GpuiInputView` the first responder, which shows the software keyboard; losing focus hides it. Typed characters arrive as key presses, so key bindings still see them. While a text input has focus, a hardware keyboard also delivers navigation and function keys and command/control shortcuts as keystrokes, except during composition, when every key goes to the IME. |
+| IME composition | `GpuiInputView` implements `UITextInput` over GPUI's input handler (UTF-16 offsets on both sides), so Chinese, Japanese and Korean keyboards compose marked text in place: `setMarkedText:` maps to `replace_and_mark_text_in_range`, `unmarkText` to `unmark_text`, and `firstRectForRange:` to `bounds_for_range` for the candidate bar. GPUI draws the text, caret and marked-text underline itself. When GPUI changes the text or selection on its own (a key binding, a tap, another input taking focus), the keyboard is told through its `inputDelegate`, which also drops a composition GPUI ended. |
+| Text assistance | Follows the focused input's `TextInputConfiguration`: autocorrection (and smart quotes and dashes with it), suggestions, autocapitalization and the return key type. GPUI's default turns all of them off. |
 | Insets | The safe area (notch, Dynamic Island, home indicator) and the keyboard are reported as `WindowInsets`; use `window.fully_visible_bounds()` to keep content clear of them. The keyboard inset moves with the keyboard: UIKit animates a hidden view with the keyboard's own duration and curve, and a `CADisplayLink` reports its height every frame (at up to 120 Hz on ProMotion iPhones when the app's `Info.plist` sets `CADisableMinimumFrameDurationOnPhone`, as `examples/ios-demo/Info.ios.plist` does). |
 | Lifecycle | `UIApplication` notifications map to GPUI's `Inactive`, `Background`, `Foreground` and `Active` phases, and the window turns hidden and visible with them. |
 | Appearance, fonts, clipboard | Dark mode follows the system. Helvetica Neue (the default), SF, Menlo and Apple Color Emoji are loaded from `/System/Library/Fonts`. Plain-text clipboard through `UIPasteboard`. |
@@ -169,7 +171,7 @@ npm run tauri -- ios init
 npm run tauri -- ios dev    # pick a simulator or a connected device
 ```
 
-`scripts/ios-smoke.sh` is the CI check: it installs a simulator build, then asserts on the app's console while switching dark mode, backgrounding the app, and relaunching it with `--focus-input` to check that the keyboard inset animates.
+`scripts/ios-smoke.sh` is the CI check: it installs a simulator build, then asserts on the app's console while switching dark mode, backgrounding the app, and relaunching it with `--focus-input` to check that the keyboard inset animates. It then relaunches the app with `IOS_DEMO_IME=1`, which drives the input view through `setMarkedText:`/`unmarkText` the way a Japanese keyboard does (a simulator cannot be made to type through one).
 
 One GPUI window per app is supported on iOS. There is no system back action, so `on_back`/`set_back_enabled` do nothing.
 
@@ -250,4 +252,4 @@ Without a display, `cargo test` skips the suite.
 - Accessibility (AccessKit through Tauri windows).
 - Building and testing on macOS and Windows.
 - Android: IME composition beyond committed text, multiple GPUI windows, and accessibility.
-- iOS: running on a physical device, IME composition (marked text, e.g. Chinese and Japanese input), multiple GPUI windows, and accessibility.
+- iOS: running on a physical device, a real IME keyboard (CI scripts the `UITextInput` calls instead), CJK fonts (only the UI, monospace and emoji fonts are loaded, so CJK text needs an app-supplied font), multiple GPUI windows, and accessibility.

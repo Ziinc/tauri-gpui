@@ -5,8 +5,9 @@
 //! focus as window events. What TAO lacks is provided by `GpuiInputView`, a
 //! transparent subview laid over TAO's view that never takes touches. It is
 //! the first responder for the software and hardware keyboards
-//! (`UIKeyInput`, `pressesBegan:`), and it observes safe-area, keyboard frame,
-//! trait (dark mode) and application lifecycle changes.
+//! (`UITextInput`, including IME composition, and `pressesBegan:`), and it
+//! observes safe-area, keyboard frame, trait (dark mode) and application
+//! lifecycle changes.
 //!
 //! The keyboard notifications only carry the end frame plus a duration and a
 //! curve (usually UIKit's private keyboard curve), so the inset is animated by
@@ -18,49 +19,57 @@
 //! UIKit calls back synchronously, sometimes from inside a GPUI update (showing
 //! the keyboard posts its frame notification right away), so every callback
 //! becomes a [`ViewEvent`] queued for [`crate::runtime::Runtime::drain`].
+//! Keyboard edits and text queries then drain the queue on the spot when GPUI
+//! is free, because UIKit reads the document back right after editing it (see
+//! `document`).
 
 mod cgl;
+mod document;
 pub(crate) mod keys;
+pub(crate) mod text;
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     collections::VecDeque,
     sync::Arc,
 };
 
-use gpui::AppLifecyclePhase;
+use gpui::{AppLifecyclePhase, Autocapitalize, TextInputAction};
 use objc2::{
-    MainThreadMarker, MainThreadOnly, define_class, msg_send,
-    rc::Retained,
-    runtime::{AnyObject, NSObjectProtocol, Sel},
+    DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
+    rc::{Retained, Weak},
+    runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel},
     sel,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
-    NSNotification, NSNotificationCenter, NSNotificationName, NSRunLoop, NSRunLoopCommonModes,
-    NSSet, NSString,
+    NSArray, NSAttributedStringKey, NSComparisonResult, NSDictionary, NSInteger, NSNotification,
+    NSNotificationCenter, NSNotificationName, NSRange, NSRunLoop, NSRunLoopCommonModes, NSSet,
+    NSString,
 };
 use objc2_quartz_core::{CADisplayLink, CAFrameRateRange};
 use objc2_ui_kit::{
-    UIApplicationDidBecomeActiveNotification, UIApplicationDidEnterBackgroundNotification,
-    UIApplicationWillEnterForegroundNotification, UIApplicationWillResignActiveNotification,
-    UIColor, UIEdgeInsets, UIEvent, UIKeyInput, UIKeyboardAnimationCurveUserInfoKey,
-    UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
-    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIPasteboard, UIPress,
-    UIPressesEvent, UIResponder, UITextAutocapitalizationType, UITextAutocorrectionType,
-    UITextInputTraits, UITextSmartDashesType, UITextSmartQuotesType, UITextSpellCheckingType,
-    UITraitCollection, UITraitEnvironment, UIUserInterfaceStyle, UIView, UIViewAnimationOptions,
-    UIViewAutoresizing,
+    NSWritingDirection, UIApplicationDidBecomeActiveNotification,
+    UIApplicationDidEnterBackgroundNotification, UIApplicationWillEnterForegroundNotification,
+    UIApplicationWillResignActiveNotification, UIColor, UIEdgeInsets, UIEvent, UIKeyInput,
+    UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
+    UIKeyboardWillHideNotification, UIPasteboard, UIPress, UIPressesEvent, UIResponder,
+    UIReturnKeyType, UITextAutocapitalizationType, UITextAutocorrectionType, UITextInput,
+    UITextInputDelegate, UITextInputStringTokenizer, UITextInputTokenizer, UITextInputTraits,
+    UITextLayoutDirection, UITextPosition, UITextRange, UITextSelectionRect, UITextSmartDashesType,
+    UITextSmartQuotesType, UITextSpellCheckingType, UITextStorageDirection, UITraitCollection,
+    UITraitEnvironment, UIUserInterfaceStyle, UIView, UIViewAnimationOptions, UIViewAutoresizing,
 };
 
 use crate::platform::dispatcher::LoopWaker;
+use text::TextEdit;
 
 /// Queued UIKit callbacks. Geometry is in points (GPUI logical pixels).
 pub(crate) enum ViewEvent {
-    /// Text typed on the software keyboard, or a hardware key that produces
-    /// text. A lone `"\n"` is the return key.
-    InsertText(String),
-    DeleteBackward,
+    /// A keyboard edit: typed or committed text (a lone `"\n"` is the return
+    /// key), backspace, composition, or a selection change.
+    Text(TextEdit),
     /// A hardware key UIKit does not turn into text (arrows, escape, ...) or
     /// any key pressed with command or control.
     Key {
@@ -143,9 +152,18 @@ pub(crate) fn is_dark() -> bool {
     DARK.with(Cell::get)
 }
 
+pub(crate) use document::{set_text_input_configuration, sync};
+
 fn style_is_dark(traits: &UITraitCollection) -> bool {
     // SAFETY: a plain property read.
     (unsafe { traits.userInterfaceStyle() }) == UIUserInterfaceStyle::Dark
+}
+
+#[derive(Default)]
+struct InputViewIvars {
+    tokenizer: OnceCell<Retained<UITextInputStringTokenizer>>,
+    /// `inputDelegate` is a weak property.
+    delegate: RefCell<Option<Weak<ProtocolObject<dyn UITextInputDelegate>>>>,
 }
 
 define_class!(
@@ -154,6 +172,7 @@ define_class!(
     #[unsafe(super(UIView, UIResponder, objc2_foundation::NSObject))]
     #[name = "TauriGpuiInputView"]
     #[thread_kind = MainThreadOnly]
+    #[ivars = InputViewIvars]
     struct InputView;
 
     impl InputView {
@@ -263,31 +282,66 @@ define_class!(
     unsafe impl NSObjectProtocol for InputView {}
 
     unsafe impl UITextInputTraits for InputView {
-        // GPUI owns the text, and UIKeyInput gives the keyboard no context
-        // to correct or capitalize against.
+        // GPUI's default `TextInputConfiguration` turns all of these off;
+        // a focused input opts in through `text_input_configuration`.
         #[unsafe(method(autocapitalizationType))]
         fn autocapitalization_type(&self) -> UITextAutocapitalizationType {
-            UITextAutocapitalizationType::None
+            match document::configuration().autocapitalize {
+                Autocapitalize::None => UITextAutocapitalizationType::None,
+                Autocapitalize::Words => UITextAutocapitalizationType::Words,
+                Autocapitalize::Sentences => UITextAutocapitalizationType::Sentences,
+                Autocapitalize::Characters => UITextAutocapitalizationType::AllCharacters,
+            }
         }
 
         #[unsafe(method(autocorrectionType))]
         fn autocorrection_type(&self) -> UITextAutocorrectionType {
-            UITextAutocorrectionType::No
+            if document::configuration().autocorrect {
+                UITextAutocorrectionType::Yes
+            } else {
+                UITextAutocorrectionType::No
+            }
         }
 
         #[unsafe(method(spellCheckingType))]
         fn spell_checking_type(&self) -> UITextSpellCheckingType {
-            UITextSpellCheckingType::No
+            if document::configuration().suggestions {
+                UITextSpellCheckingType::Yes
+            } else {
+                UITextSpellCheckingType::No
+            }
         }
 
         #[unsafe(method(smartQuotesType))]
         fn smart_quotes_type(&self) -> UITextSmartQuotesType {
-            UITextSmartQuotesType::No
+            if document::configuration().autocorrect {
+                UITextSmartQuotesType::Default
+            } else {
+                UITextSmartQuotesType::No
+            }
         }
 
         #[unsafe(method(smartDashesType))]
         fn smart_dashes_type(&self) -> UITextSmartDashesType {
-            UITextSmartDashesType::No
+            if document::configuration().autocorrect {
+                UITextSmartDashesType::Default
+            } else {
+                UITextSmartDashesType::No
+            }
+        }
+
+        #[unsafe(method(returnKeyType))]
+        fn return_key_type(&self) -> UIReturnKeyType {
+            match document::configuration().input_action {
+                TextInputAction::Unspecified | TextInputAction::Enter | TextInputAction::Previous => {
+                    UIReturnKeyType::Default
+                }
+                TextInputAction::Done => UIReturnKeyType::Done,
+                TextInputAction::Go => UIReturnKeyType::Go,
+                TextInputAction::Next => UIReturnKeyType::Next,
+                TextInputAction::Search => UIReturnKeyType::Search,
+                TextInputAction::Send => UIReturnKeyType::Send,
+            }
         }
     }
 
@@ -301,12 +355,265 @@ define_class!(
 
         #[unsafe(method(insertText:))]
         fn insert_text(&self, text: &NSString) {
-            push(ViewEvent::InsertText(text.to_string()));
+            document::edit(TextEdit::Insert(text.to_string()));
         }
 
         #[unsafe(method(deleteBackward))]
         fn delete_backward(&self) {
-            push(ViewEvent::DeleteBackward);
+            document::edit(TextEdit::DeleteBackward);
+        }
+    }
+
+    /// The document is GPUI's focused input, read through its input handler
+    /// (see `document`). GPUI draws the text, caret, selection and marked
+    /// text itself, so no `UITextInteraction` is installed.
+    unsafe impl UITextInput for InputView {
+        #[unsafe(method_id(textInRange:))]
+        fn text_in_range(&self, range: &UITextRange) -> Option<Retained<NSString>> {
+            (|| {
+                let text = document::text_in(document::offsets(range)?)?;
+                Some(NSString::from_str(&text))
+            })()
+        }
+
+        #[unsafe(method(replaceRange:withText:))]
+        fn replace_range(&self, range: &UITextRange, text: &NSString) {
+            if let Some(range) = document::offsets(range) {
+                document::edit(TextEdit::Replace {
+                    range,
+                    text: text.to_string(),
+                });
+            }
+        }
+
+        #[unsafe(method_id(selectedTextRange))]
+        fn selected_text_range(&self) -> Option<Retained<UITextRange>> {
+            let selection = document::state().map_or(0..0, |state| state.selection);
+            Some(document::range(self.mtm(), selection))
+        }
+
+        #[unsafe(method(setSelectedTextRange:))]
+        fn set_selected_text_range(&self, range: Option<&UITextRange>) {
+            if let Some(range) = range.and_then(document::offsets) {
+                document::edit(TextEdit::Select(range));
+            }
+        }
+
+        #[unsafe(method_id(markedTextRange))]
+        fn marked_text_range(&self) -> Option<Retained<UITextRange>> {
+            (|| {
+                let marked = document::state()?.marked?;
+                Some(document::range(self.mtm(), marked))
+            })()
+        }
+
+        /// GPUI styles marked text itself.
+        #[unsafe(method_id(markedTextStyle))]
+        fn marked_text_style(&self) -> Option<Retained<NSDictionary<NSAttributedStringKey, AnyObject>>> {
+            None
+        }
+
+        #[unsafe(method(setMarkedTextStyle:))]
+        fn set_marked_text_style(&self, _style: Option<&NSDictionary<NSAttributedStringKey, AnyObject>>) {}
+
+        #[unsafe(method(setMarkedText:selectedRange:))]
+        fn set_marked_text(&self, text: Option<&NSString>, selected: NSRange) {
+            document::edit(TextEdit::Mark {
+                text: text.map(|text| text.to_string()).unwrap_or_default(),
+                selected: selected.location..selected.location + selected.length,
+            });
+        }
+
+        #[unsafe(method(unmarkText))]
+        fn unmark_text(&self) {
+            document::edit(TextEdit::Unmark);
+        }
+
+        #[unsafe(method_id(beginningOfDocument))]
+        fn beginning_of_document(&self) -> Retained<UITextPosition> {
+            let start = document::state().map_or(0, |state| state.document.start);
+            document::position(self.mtm(), start)
+        }
+
+        #[unsafe(method_id(endOfDocument))]
+        fn end_of_document(&self) -> Retained<UITextPosition> {
+            let end = document::state().map_or(0, |state| state.document.end);
+            document::position(self.mtm(), end)
+        }
+
+        #[unsafe(method_id(textRangeFromPosition:toPosition:))]
+        fn text_range_from_position(
+            &self,
+            from: &UITextPosition,
+            to: &UITextPosition,
+        ) -> Option<Retained<UITextRange>> {
+            (|| {
+                let (from, to) = (document::offset(from)?, document::offset(to)?);
+                Some(document::range(self.mtm(), from.min(to)..from.max(to)))
+            })()
+        }
+
+        #[unsafe(method_id(positionFromPosition:offset:))]
+        fn position_from_position(
+            &self,
+            position: &UITextPosition,
+            offset: NSInteger,
+        ) -> Option<Retained<UITextPosition>> {
+            self.moved(position, offset)
+        }
+
+        #[unsafe(method_id(positionFromPosition:inDirection:offset:))]
+        fn position_in_direction(
+            &self,
+            position: &UITextPosition,
+            direction: UITextLayoutDirection,
+            offset: NSInteger,
+        ) -> Option<Retained<UITextPosition>> {
+            // GPUI exposes no line layout: up and down move like left and
+            // right.
+            let backward = matches!(direction, UITextLayoutDirection::Left | UITextLayoutDirection::Up);
+            self.moved(position, if backward { -offset } else { offset })
+        }
+
+        #[unsafe(method(comparePosition:toPosition:))]
+        fn compare_position(&self, position: &UITextPosition, other: &UITextPosition) -> NSComparisonResult {
+            match document::offset(position).cmp(&document::offset(other)) {
+                std::cmp::Ordering::Less => NSComparisonResult::Ascending,
+                std::cmp::Ordering::Equal => NSComparisonResult::Same,
+                std::cmp::Ordering::Greater => NSComparisonResult::Descending,
+            }
+        }
+
+        #[unsafe(method(offsetFromPosition:toPosition:))]
+        fn offset_from_position(&self, from: &UITextPosition, to: &UITextPosition) -> NSInteger {
+            let (Some(from), Some(to)) = (document::offset(from), document::offset(to)) else {
+                return 0;
+            };
+            to as NSInteger - from as NSInteger
+        }
+
+        #[unsafe(method_id(inputDelegate))]
+        fn input_delegate_property(&self) -> Option<Retained<ProtocolObject<dyn UITextInputDelegate>>> {
+            self.input_delegate()
+        }
+
+        #[unsafe(method(setInputDelegate:))]
+        fn set_input_delegate(&self, delegate: Option<&ProtocolObject<dyn UITextInputDelegate>>) {
+            *self.ivars().delegate.borrow_mut() = delegate.map(Weak::from);
+        }
+
+        #[unsafe(method_id(tokenizer))]
+        fn tokenizer(&self) -> Retained<ProtocolObject<dyn UITextInputTokenizer>> {
+            let tokenizer = self.ivars().tokenizer.get_or_init(|| {
+                // SAFETY: this view implements UITextInput.
+                unsafe {
+                    UITextInputStringTokenizer::initWithTextInput(
+                        UITextInputStringTokenizer::alloc(self.mtm()),
+                        self,
+                    )
+                }
+            });
+            ProtocolObject::from_retained(tokenizer.clone())
+        }
+
+        #[unsafe(method_id(positionWithinRange:farthestInDirection:))]
+        fn position_within_range(
+            &self,
+            range: &UITextRange,
+            direction: UITextLayoutDirection,
+        ) -> Option<Retained<UITextPosition>> {
+            (|| {
+                let range = document::offsets(range)?;
+                let backward = matches!(direction, UITextLayoutDirection::Left | UITextLayoutDirection::Up);
+                Some(document::position(self.mtm(), if backward { range.start } else { range.end }))
+            })()
+        }
+
+        #[unsafe(method_id(characterRangeByExtendingPosition:inDirection:))]
+        fn character_range_by_extending(
+            &self,
+            position: &UITextPosition,
+            direction: UITextLayoutDirection,
+        ) -> Option<Retained<UITextRange>> {
+            (|| {
+                let offset = document::offset(position)?;
+                let document = document::state()?.document;
+                let backward = matches!(direction, UITextLayoutDirection::Left | UITextLayoutDirection::Up);
+                let range = if backward {
+                    document.start..offset
+                } else {
+                    offset..document.end
+                };
+                Some(document::range(self.mtm(), range))
+            })()
+        }
+
+        #[unsafe(method(baseWritingDirectionForPosition:inDirection:))]
+        fn base_writing_direction(
+            &self,
+            _position: &UITextPosition,
+            _direction: UITextStorageDirection,
+        ) -> NSWritingDirection {
+            NSWritingDirection::Natural
+        }
+
+        #[unsafe(method(setBaseWritingDirection:forRange:))]
+        fn set_base_writing_direction(&self, _direction: NSWritingDirection, _range: &UITextRange) {}
+
+        /// Where the keyboard anchors its candidate and correction UI.
+        #[unsafe(method(firstRectForRange:))]
+        fn first_rect_for_range(&self, range: &UITextRange) -> CGRect {
+            document::offsets(range)
+                .and_then(document::bounds_for)
+                .map_or(CGRect::ZERO, document::cg_rect)
+        }
+
+        #[unsafe(method(caretRectForPosition:))]
+        fn caret_rect_for_position(&self, position: &UITextPosition) -> CGRect {
+            let Some(offset) = document::offset(position) else {
+                return CGRect::ZERO;
+            };
+            document::bounds_for(offset..offset).map_or(CGRect::ZERO, |bounds| {
+                let rect = document::cg_rect(bounds);
+                CGRect::new(rect.origin, CGSize::new(rect.size.width.max(2.), rect.size.height))
+            })
+        }
+
+        /// No system selection UI is shown, so there is nothing to outline.
+        #[unsafe(method_id(selectionRectsForRange:))]
+        fn selection_rects_for_range(&self, _range: &UITextRange) -> Retained<NSArray<UITextSelectionRect>> {
+            NSArray::new()
+        }
+
+        #[unsafe(method_id(closestPositionToPoint:))]
+        fn closest_position_to_point(&self, at: CGPoint) -> Option<Retained<UITextPosition>> {
+            (|| {
+                let offset = document::index_at(at)
+                    .or_else(|| document::state().map(|state| state.selection.end))?;
+                Some(document::position(self.mtm(), offset))
+            })()
+        }
+
+        #[unsafe(method_id(closestPositionToPoint:withinRange:))]
+        fn closest_position_within_range(
+            &self,
+            at: CGPoint,
+            range: &UITextRange,
+        ) -> Option<Retained<UITextPosition>> {
+            (|| {
+                let range = document::offsets(range)?;
+                let offset = document::index_at(at).unwrap_or(range.start);
+                Some(document::position(self.mtm(), offset.clamp(range.start, range.end)))
+            })()
+        }
+
+        #[unsafe(method_id(characterRangeAtPoint:))]
+        fn character_range_at_point(&self, at: CGPoint) -> Option<Retained<UITextRange>> {
+            (|| {
+                let offset = document::index_at(at)?;
+                let end = document::state().map_or(offset, |state| (offset + 1).min(state.document.end));
+                Some(document::range(self.mtm(), offset..end))
+            })()
         }
     }
 );
@@ -320,13 +627,18 @@ impl InputView {
     }
 
     fn new(mtm: MainThreadMarker, frame: CGRect) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
+        let this = Self::alloc(mtm).set_ivars(InputViewIvars::default());
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
     /// Queues the hardware keys GPUI must see as keystrokes. Returns `false`
     /// when none of `presses` is one, so UIKit turns them into text.
+    /// Mid-composition every key goes to the IME, which uses the arrows,
+    /// return and backspace itself.
     fn forward_presses(&self, presses: &NSSet<UIPress>, down: bool) -> bool {
+        if document::composing() {
+            return false;
+        }
         let mtm = self.mtm();
         let keys: Vec<_> = presses
             .iter()
@@ -346,6 +658,19 @@ impl InputView {
             push(ViewEvent::Key { down, key });
         }
         true
+    }
+
+    /// `position` moved by `offset`, or `None` outside the document.
+    fn moved(
+        &self,
+        position: &UITextPosition,
+        offset: NSInteger,
+    ) -> Option<Retained<UITextPosition>> {
+        let document = document::state().map_or(0..0, |state| state.document);
+        let offset = document::offset(position)?.checked_add_signed(offset)?;
+        (document.start..=document.end)
+            .contains(&offset)
+            .then(|| document::position(self.mtm(), offset))
     }
 
     /// Height of the keyboard's end frame over this view, in points.
@@ -486,6 +811,9 @@ pub(crate) unsafe fn install(view: *mut std::ffi::c_void) {
         UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight,
     );
     input.setBackgroundColor(Some(&UIColor::clearColor()));
+    // GPUI draws the caret; keep any caret UIKit adds for a UITextInput
+    // view invisible.
+    let _: () = unsafe { msg_send![&*input, setTintColor: &*UIColor::clearColor()] };
     input.setOpaque(false);
     host.addSubview(&input);
 
@@ -535,6 +863,7 @@ pub(crate) unsafe fn install(view: *mut std::ffi::c_void) {
 
 /// Removes the input view (the attached window was destroyed).
 pub(crate) fn uninstall() {
+    document::reset();
     if let Some(mut keyboard) = KEYBOARD.with(|keyboard| keyboard.borrow_mut().take()) {
         keyboard.stop();
     }

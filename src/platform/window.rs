@@ -211,14 +211,21 @@ impl WindowInner {
     #[cfg(any(gpui_mobile, test))]
     #[cfg_attr(not(gpui_mobile), allow(dead_code))]
     pub fn with_input_handler(&self, f: impl FnOnce(&mut PlatformInputHandler)) {
-        let handler = self.state.borrow_mut().input_handler.take();
-        if let Some(mut handler) = handler {
-            f(&mut handler);
-            let mut state = self.state.borrow_mut();
-            if state.input_handler.is_none() {
-                state.input_handler = Some(handler);
-            }
+        self.input_handler(f);
+    }
+
+    /// Like [`Self::with_input_handler`], returning `f`'s result, or `None`
+    /// when no text input has focus.
+    #[cfg(any(gpui_mobile, test))]
+    #[cfg_attr(not(gpui_mobile), allow(dead_code))]
+    pub fn input_handler<R>(&self, f: impl FnOnce(&mut PlatformInputHandler) -> R) -> Option<R> {
+        let mut handler = self.state.borrow_mut().input_handler.take()?;
+        let result = f(&mut handler);
+        let mut state = self.state.borrow_mut();
+        if state.input_handler.is_none() {
+            state.input_handler = Some(handler);
         }
+        Some(result)
     }
 
     /// Notes that the text input's focus (`Some`) or selection and content
@@ -726,6 +733,11 @@ impl PlatformWindow for TauriGpuiWindow {
     #[cfg(gpui_mobile)]
     fn hide_soft_keyboard(&self) {
         crate::mobile::hide_keyboard();
+    }
+
+    #[cfg(gpui_ios)]
+    fn set_text_input_configuration(&mut self, configuration: gpui::TextInputConfiguration) {
+        crate::ios::set_text_input_configuration(configuration);
     }
 
     #[cfg(gpui_mobile)]

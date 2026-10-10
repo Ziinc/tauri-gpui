@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Installs examples/ios-demo on an iPhone simulator and checks, from the app's
 # console, that GPUI attaches and renders, honours the safe area, follows dark
-# mode, survives a trip to the background, and that the keyboard inset
-# animates. Screenshots go to the output directory.
+# mode, survives a trip to the background, that the keyboard inset animates,
+# and takes IME composition from the keyboard's input view. Screenshots go to
+# the output directory.
 #
 #   scripts/ios-smoke.sh <path/to/app> [output-dir]
 set -euo pipefail
@@ -126,8 +127,23 @@ echo "$bottoms" | awk '
   }' || fail "expected an animated keyboard inset"
 xcrun simctl io "$device" screenshot "$out/keyboard.png" >/dev/null
 
+# IME composition: relaunch with the scripted keyboard (src/ime_check.rs),
+# which marks "にほ", converts it to "日本", commits it and presses return.
+xcrun simctl terminate "$device" "$bundle" || true
 sync_log
-if grep -qE 'PANIC|tauri-plugin-gpui: .*failed' "$log"; then
+cp "$log" "$out/app-main.log"
+app_log=
+SIMCTL_CHILD_IOS_DEMO_IME=1 xcrun simctl launch --terminate-running-process \
+  --stdout="$out/stdout-ime.log" --stderr="$out/stderr-ime.log" "$device" "$bundle"
+wait_for 'ime step=mark marked=0\.\.2 text="にほ"'
+wait_for 'ime step=convert marked=0\.\.2 text="日本"'
+sleep 1
+xcrun simctl io "$device" screenshot "$out/composing.png" >/dev/null
+wait_for 'ime step=commit marked=none text="日本"'
+wait_for 'submitted text="日本"'
+
+sync_log
+if grep -qE 'PANIC|tauri-plugin-gpui: .*failed' "$log" "$out/app-main.log"; then
   fail "errors in the console"
 fi
 xcrun simctl terminate "$device" "$bundle" || true
