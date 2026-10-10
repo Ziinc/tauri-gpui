@@ -21,7 +21,7 @@ use raw_window_handle::{
 };
 use tauri::Wry;
 
-use super::dispatcher::LoopWaker;
+use super::{dispatcher::LoopWaker, typed_text::TypedText};
 
 /// Native handles of a Tauri window, captured once at attach time so the
 /// renderer never has to round-trip through the Tauri runtime for them.
@@ -91,9 +91,7 @@ pub(crate) struct WindowState {
     pub appearance: WindowAppearance,
     pub fullscreen: bool,
     pub maximized: bool,
-    /// Text inserted from the last key press, used to drop the duplicate
-    /// commit some TAO backends send through `ReceivedImeText`.
-    pub last_key_text: Option<String>,
+    pub typed_text: TypedText,
 }
 
 /// State shared between the GPUI-owned `PlatformWindow` and the plugin
@@ -106,9 +104,20 @@ pub(crate) struct WindowInner {
     pub callbacks: RefCell<Callbacks>,
     pub frame_pending: Cell<bool>,
     pub force_present: Cell<bool>,
+    /// Maximized/fullscreen/visible may have changed; TAO has no events for
+    /// them, so they are re-read (lazily, at most once per change) from Tauri.
+    pub mode_dirty: Cell<bool>,
+    /// The window may be on another monitor.
+    pub display_dirty: Cell<bool>,
+    /// Visibility as last reported to GPUI.
+    pub reported_visible: Cell<bool>,
+    /// Kept outside the renderer so GPUI can still ask for it after the
+    /// renderer is torn down.
+    pub sprite_atlas: Arc<dyn PlatformAtlas>,
     pub closed: Cell<bool>,
     pub gpui_handle: Cell<Option<AnyWindowHandle>>,
-    pub display: Rc<dyn PlatformDisplay>,
+    /// The monitor the window is on; refreshed with the window mode.
+    pub display: RefCell<Option<Rc<dyn PlatformDisplay>>>,
     pub waker: Arc<LoopWaker>,
     /// Actions that must run outside of any GPUI update (see `Runtime::defer`).
     pub defer: Rc<dyn Fn(Box<dyn FnOnce()>)>,
@@ -144,35 +153,56 @@ impl WindowInner {
     }
 
     pub fn handle_input(&self, input: PlatformInput) -> bool {
+        let key_char = match &input {
+            PlatformInput::KeyDown(event) => {
+                let key_char = event.keystroke.key_char.clone();
+                let earlier = self
+                    .state
+                    .borrow_mut()
+                    .typed_text
+                    .key_down(key_char.as_deref());
+                if let Some(text) = earlier {
+                    self.insert_text(&text);
+                }
+                Some(key_char)
+            }
+            _ => None,
+        };
         let callback = self.callbacks.borrow_mut().input.take();
         let mut handled = false;
         if let Some(mut callback) = callback {
-            let result = callback(input.clone());
+            let result = callback(input);
             restore(&mut self.callbacks.borrow_mut().input, callback);
             handled = !result.propagate;
         }
-        if let PlatformInput::KeyDown(event) = &input {
-            let key_char = event.keystroke.key_char.clone();
-            if !handled
-                && event.keystroke.modifiers.is_subset_of(&Modifiers::shift())
-                && let Some(text) = &key_char
-            {
+        if let Some(key_char) = key_char {
+            // `key_char` is only set for keys that type text (see `keystroke`).
+            if !handled && let Some(text) = &key_char {
                 self.insert_text(text);
             }
             // Either we inserted it or GPUI consumed the key: in both cases a
             // duplicate IME commit of the same text must be ignored.
-            self.state.borrow_mut().last_key_text = key_char;
+            self.state.borrow_mut().typed_text.key_dispatched(key_char);
         }
         handled
     }
 
     pub fn handle_ime_commit(&self, text: &str) {
-        let duplicate = {
-            let mut state = self.state.borrow_mut();
-            state.last_key_text.take().as_deref() == Some(text)
-        };
-        if !duplicate {
-            self.insert_text(text);
+        let earlier = self.state.borrow_mut().typed_text.commit(text);
+        if let Some(text) = earlier {
+            self.insert_text(&text);
+        }
+        if self.state.borrow().typed_text.has_pending() {
+            // Inserted on the next drain unless a key press claims it first.
+            self.waker.wake();
+        }
+    }
+
+    /// Inserts an IME commit no key press claimed.
+    pub fn flush_ime_commit(&self) {
+        let text = self.state.borrow_mut().typed_text.flush();
+        if let Some(text) = text {
+            self.insert_text(&text);
         }
     }
 
@@ -208,14 +238,73 @@ impl WindowInner {
         click.count
     }
 
-    /// Re-reads window modes TAO reports no dedicated event for. Maximizing
-    /// or entering fullscreen always resizes, so this runs on resize/move.
+    /// Marks maximized/fullscreen/visibility and the monitor for a re-read.
+    pub fn window_mode_changed(&self) {
+        self.mode_dirty.set(true);
+        self.window_moved();
+    }
+
+    /// Marks the monitor for a re-read: moving changes nothing else.
+    pub fn window_moved(&self) {
+        self.display_dirty.set(true);
+        self.waker.wake();
+    }
+
+    /// Re-reads window modes TAO reports no dedicated event for, if an event
+    /// that can change them arrived since the last read. Each read is a
+    /// synchronous round trip through the Tauri runtime, so resize and move
+    /// storms are coalesced into one read.
     pub fn sync_window_mode(&self) {
-        let maximized = self.tauri_window.is_maximized().unwrap_or(false);
-        let fullscreen = self.tauri_window.is_fullscreen().unwrap_or(false);
+        let window = &self.tauri_window;
+        if self.display_dirty.take() {
+            let display = window
+                .current_monitor()
+                .ok()
+                .flatten()
+                .map(|monitor| super::TauriDisplay::from_monitor(&monitor));
+            *self.display.borrow_mut() = display;
+        }
+        if !self.mode_dirty.take() {
+            return;
+        }
+        let maximized = window.is_maximized().unwrap_or(false);
+        let fullscreen = window.is_fullscreen().unwrap_or(false);
+        // Hidden (`hide()`) windows are not tracked: TAO reports nothing when
+        // they are shown again. Minimizing and restoring always do.
+        let visible = !window.is_minimized().unwrap_or(false);
         let mut state = self.state.borrow_mut();
         state.maximized = maximized;
         state.fullscreen = fullscreen;
+        state.visible = visible;
+    }
+
+    /// Applies a pending window-mode change and tells GPUI when visibility
+    /// changed since it was last told.
+    pub fn refresh_window_mode(&self) {
+        let display_id = |inner: &Self| inner.display.borrow().as_ref().map(|d| d.id());
+        let old_display = display_id(self);
+        self.sync_window_mode();
+        if display_id(self) != old_display {
+            // GPUI re-reads the window's display on bounds changes.
+            self.call_unit(|c| &mut c.moved);
+        }
+        let visible = self.state.borrow().visible;
+        if self.reported_visible.replace(visible) != visible {
+            let visibility = if visible {
+                WindowVisibility::Visible
+            } else {
+                WindowVisibility::Hidden
+            };
+            let callback = self.callbacks.borrow_mut().visibility_change.take();
+            if let Some(mut callback) = callback {
+                callback(visibility);
+                restore(&mut self.callbacks.borrow_mut().visibility_change, callback);
+            }
+            if visibility == WindowVisibility::Visible {
+                self.force_present.set(true);
+                self.schedule_frame();
+            }
+        }
     }
 
     pub fn resized(&self, physical: Size<DevicePixels>, scale_factor: f32) {
@@ -349,10 +438,12 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn is_maximized(&self) -> bool {
+        self.inner.sync_window_mode();
         self.inner.state.borrow().maximized
     }
 
     fn window_bounds(&self) -> WindowBounds {
+        self.inner.sync_window_mode();
         let state = self.inner.state.borrow();
         let bounds = Bounds::new(
             state.origin,
@@ -388,7 +479,9 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
-        Some(self.inner.display.clone())
+        // Not synced here: GPUI asks on every resize/move, and the drain
+        // refreshes it (and re-notifies GPUI) once per event-loop iteration.
+        self.inner.display.borrow().clone()
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
@@ -434,7 +527,8 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn visibility(&self) -> WindowVisibility {
-        if self.inner.state.borrow().visible {
+        // What GPUI was told, so it never sees a change without its callback.
+        if self.inner.reported_visible.get() {
             WindowVisibility::Visible
         } else {
             WindowVisibility::Hidden
@@ -488,6 +582,7 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn is_fullscreen(&self) -> bool {
+        self.inner.sync_window_mode();
         self.inner.state.borrow().fullscreen
     }
 
@@ -575,12 +670,7 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        let state = self.inner.state.borrow();
-        let renderer = state
-            .renderer
-            .as_ref()
-            .expect("sprite atlas requested after the window was destroyed");
-        renderer.sprite_atlas().clone()
+        self.inner.sprite_atlas.clone()
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
@@ -641,6 +731,6 @@ pub(crate) fn default_window_state(
         appearance,
         fullscreen: false,
         maximized: false,
-        last_key_text: None,
+        typed_text: TypedText::default(),
     }
 }

@@ -60,7 +60,7 @@ impl Clipboard {
             });
         }
         let image = self.with("clipboard image read", |cb| get(cb, kind).image())?;
-        encode_png(&image)
+        encode_png(image)
             .map(|png| ClipboardItem::new_image(&Image::from_bytes(ImageFormat::Png, png)))
     }
 
@@ -131,15 +131,22 @@ fn decode_rgba(image: &Image) -> Option<arboard::ImageData<'static>> {
     }
 }
 
-/// Encodes an OS clipboard RGBA buffer as PNG for GPUI.
-fn encode_png(image: &arboard::ImageData) -> Option<Vec<u8>> {
+/// Encodes an OS clipboard RGBA buffer as PNG for GPUI. Runs on the main
+/// thread during a paste, so it favors speed over size.
+fn encode_png(image: arboard::ImageData) -> Option<Vec<u8>> {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
     let rgba = image::RgbaImage::from_raw(
         image.width as u32,
         image.height as u32,
-        image.bytes.to_vec(),
+        image.bytes.into_owned(),
     )?;
     let mut png = Vec::new();
-    match rgba.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png) {
+    let encoder = PngEncoder::new_with_quality(
+        Cursor::new(&mut png),
+        CompressionType::Fast,
+        FilterType::Sub,
+    );
+    match rgba.write_with_encoder(encoder) {
         Ok(()) => Some(png),
         Err(e) => {
             log::warn!("tauri-plugin-gpui: cannot read clipboard image: {e}");
@@ -159,9 +166,40 @@ mod tests {
             height: 1,
             bytes: Cow::Owned(vec![255, 0, 0, 255, 0, 0, 255, 128]),
         };
-        let png = encode_png(&rgba).unwrap();
+        let png = encode_png(rgba.clone()).unwrap();
         let back = decode_rgba(&Image::from_bytes(ImageFormat::Png, png)).unwrap();
         assert_eq!((back.width, back.height), (2, 1));
         assert_eq!(back.bytes, rgba.bytes);
+    }
+}
+
+#[cfg(test)]
+mod perf {
+    use super::*;
+
+    /// `cargo test --release --lib clipboard_png_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn clipboard_png_timing() {
+        let (width, height) = (3840, 2160);
+        // Screenshot-like: flat panels with some noisy rows.
+        let bytes: Vec<u8> = (0..width * height * 4)
+            .map(|i| {
+                let (x, y) = ((i / 4) % width, (i / 4) / width);
+                if y % 40 < 3 {
+                    (i % 251) as u8
+                } else {
+                    ((x / 200) * 37 + (y / 300) * 11) as u8
+                }
+            })
+            .collect();
+        let image = arboard::ImageData {
+            width,
+            height,
+            bytes: Cow::Owned(bytes),
+        };
+        let start = std::time::Instant::now();
+        let png = encode_png(image).unwrap();
+        println!("encode 4K: {:?}, {} bytes", start.elapsed(), png.len());
     }
 }

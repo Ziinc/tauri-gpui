@@ -54,7 +54,7 @@ fn main() {
 }
 ```
 
-- `tauri_plugin_gpui::init(app)` / `init_with(app, GpuiConfig)` is called from `setup` instead of going through `Builder::plugin`. The plugin needs raw TAO events, and Tauri only exposes those through `App::wry_plugin`. `GpuiConfig` lets you set a fallback font, a GPUI `AssetSource` and an `on_launch(|cx| …)` hook for app-level GPUI setup (globals, key bindings, fonts).
+- `tauri_plugin_gpui::init(app)` / `init_with(app, GpuiConfig)` is called from `setup` instead of going through `Builder::plugin`. The plugin needs raw TAO events, and Tauri only exposes those through `App::wry_plugin`. `GpuiConfig` lets you set a fallback font, a GPUI `AssetSource` and an `on_launch(|cx| …)` hook for app-level GPUI setup (globals, key bindings, fonts). Inside `on_launch` the plugin API behaves as it does in any GPUI code: `attach_gpui` completes once the hook returns, and `with_app` returns `Reentrant`.
 - `window.attach_gpui(|cx| …)` / `attach_gpui_with(GpuiOptions, …)` is a one-way call for the life of the window. A second call returns `GpuiError::AlreadyAttached`. A window that hosts a WebView returns `GpuiError::NotEligible`. You can call it from inside GPUI code, such as a click handler that builds a new Tauri window; the mount then finishes as soon as the current GPUI update returns.
 - `attach_gpui_view(GpuiOptions, |window, cx| …)` also passes the GPUI `Window` to the root builder. Component libraries need it to wrap content in their root view, for example gpui-kit's `base::Root::new(view, window, cx)`.
 - `tauri_plugin_gpui::with_app(|cx| …)` gives main-thread code outside GPUI access to the shared `App`. It returns `GpuiError::Reentrant` instead of panicking when the `App` is already borrowed.
@@ -77,13 +77,13 @@ fn main() {
 
 ### Event coverage
 
-Handled: resize, scale-factor change, move, focus, cursor enter/leave/move, mouse buttons with click counting, mouse wheel (line and pixel deltas), keyboard down/up with repeat, modifier and caps-lock state, IME commit text, theme change (including GTK's application-wide theme change, which TAO reports without a window id), close requests (GPUI can veto) and destroy (teardown).
+Handled: resize, scale-factor change, move, focus, minimize/restore (reported to GPUI as window visibility; minimized windows get no frames), cursor enter/leave/move, mouse buttons with click counting (back/forward buttons map to GPUI navigation; other extra buttons are ignored), mouse wheel (line and pixel deltas), keyboard down/up with repeat, modifier and caps-lock state, IME commit text, theme change (including GTK's application-wide theme change, which TAO reports without a window id), close requests (GPUI can veto) and destroy (teardown).
 
 `RedrawRequested` forces a present.
 
 TAO has no maximize/fullscreen events, so that state is re-read from Tauri at attach and on every resize and move; GPUI's `is_maximized`, `is_fullscreen` and `window_bounds` follow changes made through Tauri or the window manager.
 
-Keystrokes follow GPUI naming (`enter`, `left`, `f5`, lowercase characters). `key_char` comes from TAO's shift-aware logical key. When a TAO backend sends the same typed character twice (once as a key press, once as an IME commit), the duplicate is dropped.
+Keystrokes follow GPUI naming (`enter`, `left`, `f5`, lowercase characters). `key_char` comes from TAO's shift-aware logical key. When a TAO backend sends the same typed character twice (once as a key press, once as an IME commit, in either order), it is inserted once, through the key press. Option on macOS and AltGr on Windows (reported as Ctrl+Alt) type characters; Ctrl, Cmd/Super and (outside macOS) Alt make a key a shortcut.
 
 ## Minimal platform adapter: Phase 0 findings
 
@@ -93,12 +93,12 @@ The pin is exact (`=0.3.8`), because every crate in a GPUI app must share one GP
 
 What GPUI needs for rendering and interaction:
 
-- **Platform:** executors and dispatcher, text system, `run` (returns immediately), `open_window`, displays (the primary monitor via Tauri), `active_window`, cursor style, keyboard layout and mapper (US layout and the dummy mapper).
+- **Platform:** executors and dispatcher, text system, `run` (returns immediately), `open_window`, displays (Tauri's monitors, queried live; each window reports the monitor it is on), window appearance (from Tauri's window theme), `active_window`, cursor style, keyboard layout and mapper (US layout and the dummy mapper).
 - **PlatformWindow:** geometry, scale factor and appearance getters; the input handler; the `on_*` callback registrations; `draw`, `sprite_atlas` and `frame_waker`/`schedule_frame`.
 
 Everything else does one of three things:
 
-- **System clipboard:** text and images via `arboard`, including the Linux primary selection. Images are converted to and from RGBA (pasted images arrive as PNG; SVG cannot be copied). GPUI string metadata is kept in-process and reattached while the clipboard still holds the same text.
+- **System clipboard:** text and images via `arboard`, including the Linux primary selection. Images are converted to and from RGBA (pasted images arrive as PNG, encoded for speed since it runs during the paste; SVG cannot be copied). GPUI string metadata is kept in-process and reattached while the clipboard still holds the same text.
 - **Delegated to Tauri:** `quit`, `restart`, and the window title, focus, minimize, maximize, fullscreen and resize operations.
 - **Explicitly unsupported:** these return `GpuiError::UnsupportedOperation` through `anyhow`, or are logged at debug level when the GPUI signature has no error channel.
   - Windows: `open_window` outside `attach_gpui`, non-normal window kinds, background appearance (blur/transparency).

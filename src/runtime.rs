@@ -61,6 +61,8 @@ pub(crate) struct Runtime {
     tao_labels: RefCell<HashMap<TaoWindowId, String>>,
     mounts: RefCell<VecDeque<Mount>>,
     deferred: Rc<RefCell<Vec<Box<dyn FnOnce()>>>>,
+    /// Reused by `drain` to snapshot `surfaces` without allocating.
+    scratch: RefCell<Vec<Rc<WindowInner>>>,
     depth: Cell<usize>,
     proxy_installed: Cell<bool>,
 }
@@ -136,13 +138,16 @@ pub(crate) fn initialize(app: AppHandle<Wry>, config: GpuiConfig) -> Result<(), 
         tao_labels: RefCell::default(),
         mounts: RefCell::default(),
         deferred: Rc::default(),
+        scratch: RefCell::default(),
         depth: Cell::new(0),
         proxy_installed: Cell::new(false),
     }));
+    // Published first so `on_launch` can use the plugin API (attaching
+    // completes once the update returns, as from any GPUI code).
+    RUNTIME.with(|slot| slot.set(Some(runtime)));
     if let Some(on_launch) = config.on_launch {
         runtime.update(on_launch)?;
     }
-    RUNTIME.with(|slot| slot.set(Some(runtime)));
     Ok(())
 }
 
@@ -216,11 +221,7 @@ impl Runtime {
             .unwrap_or_default();
         let appearance = window
             .theme()
-            .map(|theme| match theme {
-                tauri::Theme::Dark => gpui::WindowAppearance::Dark,
-                _ => gpui::WindowAppearance::Light,
-            })
-            .unwrap_or(gpui::WindowAppearance::Light);
+            .map_or(gpui::WindowAppearance::Light, crate::platform::appearance);
 
         let raw = RawWindow {
             window: window
@@ -244,6 +245,7 @@ impl Runtime {
         )
         .map_err(|e| GpuiError::RendererInitialization(format!("{e:#}")))?;
 
+        let sprite_atlas = renderer.sprite_atlas().clone();
         let defer: Rc<dyn Fn(Box<dyn FnOnce()>)> = Rc::new({
             let deferred = self.deferred.clone();
             let waker = self.waker.clone();
@@ -266,14 +268,19 @@ impl Runtime {
             callbacks: RefCell::default(),
             frame_pending: Cell::new(false),
             force_present: Cell::new(false),
+            mode_dirty: Cell::new(true),
+            display_dirty: Cell::new(true),
+            reported_visible: Cell::new(true),
+            sprite_atlas,
             closed: Cell::new(false),
             gpui_handle: Cell::new(None),
-            display: self.platform.display.clone(),
+            display: RefCell::default(),
             waker: self.waker.clone(),
             defer,
         });
-        // The window may have been built maximized or fullscreen.
+        // The window may have been built maximized, fullscreen or minimized.
         inner.sync_window_mode();
+        inner.reported_visible.set(inner.state.borrow().visible);
         self.surfaces.borrow_mut().insert(label, inner.clone());
 
         let window_options = WindowOptions {
@@ -437,6 +444,8 @@ impl Runtime {
                 // The OS asked for a repaint (expose, resize, ...): present
                 // even if GPUI has nothing new to render.
                 if let Some(inner) = self.surface_for(*window_id, context) {
+                    // Exposure also follows a restore TAO has no event for.
+                    inner.window_mode_changed();
                     inner.force_present.set(true);
                     inner.schedule_frame();
                 }
@@ -523,20 +532,33 @@ impl Runtime {
             action();
         }
 
-        let surfaces: Vec<_> = self.surfaces.borrow().values().cloned().collect();
+        let mut surfaces = self.scratch.take();
+        surfaces.extend(self.surfaces.borrow().values().cloned());
         {
             let _guard = self.enter();
             for surface in &surfaces {
-                if surface.frame_pending.take() && !surface.closed.get() {
+                if surface.closed.get() {
+                    continue;
+                }
+                surface.flush_ime_commit();
+                surface.refresh_window_mode();
+                // GPUI is told hidden windows get no frames; keep the request
+                // pending until the window is visible again.
+                if surface.reported_visible.get() && surface.frame_pending.take() {
                     surface.request_frame();
                 }
             }
         }
+        let frames_pending = surfaces
+            .iter()
+            .any(|s| s.reported_visible.get() && s.frame_pending.get());
+        surfaces.clear();
+        self.scratch.replace(surfaces);
 
         let more_work = self.dispatcher.has_main_work()
             || !self.mounts.borrow().is_empty()
             || !self.deferred.borrow().is_empty()
-            || surfaces.iter().any(|s| s.frame_pending.get());
+            || frames_pending;
         if more_work {
             self.waker.wake();
         }

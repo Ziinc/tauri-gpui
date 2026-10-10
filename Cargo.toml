@@ -53,6 +53,7 @@ windows = { version = "0.62", features = ["Win32_Foundation"] }
 [dev-dependencies]
 tauri = { version = "2.12", features = ["unstable", "test"] }
 tauri-plugin-clipboard-manager = "2"
+async-task = "4"
 
 # Chaos/integration suite: drives a real Tauri event loop, which must own the
 # main thread, so it uses its own harness. Skips without a display.

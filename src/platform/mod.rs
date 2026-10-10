@@ -6,10 +6,12 @@
 
 pub(crate) mod clipboard;
 pub(crate) mod dispatcher;
+pub(crate) mod typed_text;
 pub(crate) mod window;
 
 use std::{
     cell::{Cell, RefCell},
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -25,7 +27,7 @@ use gpui::{
     WindowParams, point, px, size,
 };
 use gpui_wgpu::GpuContext;
-use tauri::{AppHandle, Wry};
+use tauri::{AppHandle, Manager, Wry};
 
 use crate::GpuiError;
 use dispatcher::TauriDispatcher;
@@ -45,28 +47,33 @@ pub(crate) struct TauriDisplay {
 }
 
 impl TauriDisplay {
-    pub(crate) fn primary(app: &AppHandle<Wry>) -> Self {
-        let bounds = app
-            .primary_monitor()
-            .ok()
-            .flatten()
-            .map(|monitor| {
-                let scale = monitor.scale_factor();
-                let position = monitor.position().to_logical::<f64>(scale);
-                let monitor_size = monitor.size().to_logical::<f64>(scale);
-                Bounds::new(
-                    point(px(position.x as f32), px(position.y as f32)),
-                    size(
-                        px(monitor_size.width as f32),
-                        px(monitor_size.height as f32),
-                    ),
-                )
-            })
-            .unwrap_or_else(|| Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1080.))));
-        Self {
-            id: DisplayId::new(1),
-            bounds,
-        }
+    /// A display for a Tauri monitor. The id is derived from the monitor's
+    /// name and position, so it is stable across queries.
+    pub(crate) fn from_monitor(monitor: &tauri::Monitor) -> Rc<dyn PlatformDisplay> {
+        let scale = monitor.scale_factor();
+        let physical = monitor.position();
+        let position = physical.to_logical::<f64>(scale);
+        let monitor_size = monitor.size().to_logical::<f64>(scale);
+        let mut hasher = std::hash::DefaultHasher::new();
+        (monitor.name(), physical.x, physical.y).hash(&mut hasher);
+        Rc::new(Self {
+            id: DisplayId::new(hasher.finish()),
+            bounds: Bounds::new(
+                point(px(position.x as f32), px(position.y as f32)),
+                size(
+                    px(monitor_size.width as f32),
+                    px(monitor_size.height as f32),
+                ),
+            ),
+        })
+    }
+
+    /// Stand-in when Tauri reports no monitor (e.g. while displays sleep).
+    fn fallback() -> Rc<dyn PlatformDisplay> {
+        Rc::new(Self {
+            id: DisplayId::new(0),
+            bounds: Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1080.))),
+        })
     }
 }
 
@@ -116,7 +123,6 @@ pub(crate) struct TauriPlatform {
     foreground_executor: ForegroundExecutor,
     text_system: Arc<dyn PlatformTextSystem>,
     pub(crate) gpu_context: GpuContext,
-    pub(crate) display: Rc<dyn PlatformDisplay>,
     pub(crate) active_window: Cell<Option<AnyWindowHandle>>,
     /// Label of the attached window under the pointer; cursor styles apply to it.
     pub(crate) hovered_window: RefCell<Option<tauri::Window<Wry>>>,
@@ -131,13 +137,11 @@ impl TauriPlatform {
         dispatcher: Arc<TauriDispatcher>,
         text_system: Arc<dyn PlatformTextSystem>,
     ) -> Self {
-        let display: Rc<dyn PlatformDisplay> = Rc::new(TauriDisplay::primary(&app));
         Self {
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
             text_system,
             gpu_context: GpuContext::default(),
-            display,
             active_window: Cell::new(None),
             hovered_window: RefCell::new(None),
             cursor: CursorCache::default(),
@@ -162,6 +166,13 @@ impl CursorCache {
     /// Forgets the cached style. Call when the pointer enters a window.
     pub(crate) fn reset(&self) {
         self.0.set(None);
+    }
+}
+
+pub(crate) fn appearance(theme: tauri::Theme) -> WindowAppearance {
+    match theme {
+        tauri::Theme::Dark => WindowAppearance::Dark,
+        _ => WindowAppearance::Light,
     }
 }
 
@@ -251,11 +262,25 @@ impl Platform for TauriPlatform {
     }
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
-        vec![self.display.clone()]
+        let displays: Vec<_> = self
+            .app
+            .available_monitors()
+            .unwrap_or_default()
+            .iter()
+            .map(TauriDisplay::from_monitor)
+            .collect();
+        if displays.is_empty() {
+            vec![TauriDisplay::fallback()]
+        } else {
+            displays
+        }
     }
 
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
-        Some(self.display.clone())
+        match self.app.primary_monitor() {
+            Ok(Some(monitor)) => Some(TauriDisplay::from_monitor(&monitor)),
+            _ => self.displays().into_iter().next(),
+        }
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
@@ -279,7 +304,12 @@ impl Platform for TauriPlatform {
     }
 
     fn window_appearance(&self) -> WindowAppearance {
-        WindowAppearance::Light
+        // Tauri has no app-wide theme getter; windows follow the system theme.
+        self.app
+            .windows()
+            .values()
+            .find_map(|window| window.theme().ok())
+            .map_or(WindowAppearance::Light, appearance)
     }
 
     fn open_url(&self, url: &str) {

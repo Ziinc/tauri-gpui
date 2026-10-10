@@ -23,7 +23,7 @@ use gpui::{DevicePixels, size};
 pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
     match event {
         WindowEvent::Resized(physical) => {
-            inner.sync_window_mode();
+            inner.window_mode_changed();
             let scale = inner.state.borrow().scale_factor;
             inner.resized(physical_size(physical.width, physical.height), scale);
         }
@@ -31,14 +31,14 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             scale_factor,
             new_inner_size,
         } => {
-            inner.sync_window_mode();
+            inner.window_mode_changed();
             inner.resized(
                 physical_size(new_inner_size.width, new_inner_size.height),
                 *scale_factor as f32,
             );
         }
         WindowEvent::Moved(position) => {
-            inner.sync_window_mode();
+            inner.window_moved();
             {
                 let mut state = inner.state.borrow_mut();
                 let scale = state.scale_factor;
@@ -47,9 +47,11 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             inner.call_unit(|c| &mut c.moved);
         }
         WindowEvent::Focused(focused) => {
+            // Minimizing and restoring change focus on every desktop.
+            inner.window_mode_changed();
             inner.state.borrow_mut().active = *focused;
             if !focused {
-                inner.state.borrow_mut().last_key_text = None;
+                inner.state.borrow_mut().typed_text.reset();
             }
             inner.call_bool(|c| &mut c.active_status_change, *focused);
         }
@@ -83,7 +85,9 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             }));
         }
         WindowEvent::MouseInput { state, button, .. } => {
-            let button = mouse_button(*button);
+            let Some(button) = mouse_button(*button, Os::CURRENT) else {
+                return false;
+            };
             let (position, modifiers) = {
                 let window_state = inner.state.borrow();
                 (window_state.mouse_position, window_state.modifiers)
@@ -198,14 +202,58 @@ fn logical_position(position: PhysicalPosition<f64>, scale: f32) -> gpui::Point<
     point(px(position.x as f32 / scale), px(position.y as f32 / scale))
 }
 
-fn mouse_button(button: TaoMouseButton) -> MouseButton {
-    match button {
+/// The desktop OS whose TAO backend produced an event. A parameter rather
+/// than `cfg!` so every platform's mapping is unit-tested on every host.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Os {
+    Linux,
+    Windows,
+    Mac,
+}
+
+impl Os {
+    pub(crate) const CURRENT: Os = if cfg!(target_os = "windows") {
+        Os::Windows
+    } else if cfg!(target_os = "macos") {
+        Os::Mac
+    } else {
+        Os::Linux
+    };
+}
+
+/// Maps a TAO button; `None` for buttons GPUI has no equivalent for.
+fn mouse_button(button: TaoMouseButton, os: Os) -> Option<MouseButton> {
+    // Back/forward: X11 buttons 8/9; Win32 XBUTTON1/XBUTTON2. macOS TAO
+    // reports every extra button as Middle.
+    let (back, forward) = match os {
+        Os::Windows => (1, 2),
+        _ => (8, 9),
+    };
+    Some(match button {
         TaoMouseButton::Left => MouseButton::Left,
         TaoMouseButton::Right => MouseButton::Right,
         TaoMouseButton::Middle => MouseButton::Middle,
-        TaoMouseButton::Other(8) => MouseButton::Navigate(NavigationDirection::Back),
-        TaoMouseButton::Other(9) => MouseButton::Navigate(NavigationDirection::Forward),
-        _ => MouseButton::Left,
+        TaoMouseButton::Other(n) if n == back => MouseButton::Navigate(NavigationDirection::Back),
+        TaoMouseButton::Other(n) if n == forward => {
+            MouseButton::Navigate(NavigationDirection::Forward)
+        }
+        _ => return None,
+    })
+}
+
+/// Whether a key pressed with `modifiers` types its character (GPUI's
+/// `key_char`) rather than being a shortcut.
+fn produces_text(modifiers: &Modifiers, os: Os) -> bool {
+    if modifiers.platform {
+        return false;
+    }
+    match os {
+        // Option composes characters (Option+L is `@` on a German layout).
+        Os::Mac => !modifiers.control,
+        // AltGr arrives as Ctrl+Alt; Ctrl or Alt alone is a shortcut.
+        Os::Windows => modifiers.control == modifiers.alt,
+        // AltGr is ISO_Level3_Shift, not a reported modifier.
+        Os::Linux => !modifiers.control && !modifiers.alt,
     }
 }
 
@@ -227,6 +275,17 @@ fn modifiers(state: ModifiersState) -> Modifiers {
     }
 }
 
+/// The text a key press types (GPUI's `key_char`): `character` is the
+/// layout-aware character, `key` the unmodified key name. Shortcuts type none.
+fn typed_char(character: Option<&str>, key: &str, modifiers: &Modifiers, os: Os) -> Option<String> {
+    let character = character.filter(|_| produces_text(modifiers, os))?;
+    // Ctrl+Alt is AltGr only if the layout's AltGr layer changed the key.
+    if os == Os::Windows && modifiers.control && character.to_lowercase() == key {
+        return None;
+    }
+    Some(character.to_owned())
+}
+
 /// Builds a GPUI keystroke. `key` follows GPUI's naming (lowercase, unshifted
 /// character or a named key such as `enter`); `key_char` is the typed text.
 fn keystroke(event: &KeyEvent, modifiers: Modifiers) -> Option<Keystroke> {
@@ -240,13 +299,13 @@ fn keystroke(event: &KeyEvent, modifiers: Modifiers) -> Option<Keystroke> {
         named => named_key(named)?.to_string(),
     };
     // `logical_key` carries the layout- and shift-aware character on every
-    // TAO backend (on Linux `text` ignores modifiers). Shortcuts produce none.
-    let key_char = match &event.logical_key {
-        _ if modifiers.control || modifiers.platform => None,
-        Key::Space => Some(" ".to_string()),
-        Key::Character(c) => Some(c.to_string()),
+    // TAO backend (on Linux `text` ignores modifiers).
+    let character = match &event.logical_key {
+        Key::Space => Some(" "),
+        Key::Character(c) => Some(&**c),
         _ => None,
     };
+    let key_char = typed_char(character, &key, &modifiers, Os::CURRENT);
     Some(Keystroke {
         modifiers,
         key,
@@ -311,10 +370,94 @@ mod tests {
 
     #[test]
     fn navigation_buttons() {
+        let back = Some(MouseButton::Navigate(NavigationDirection::Back));
+        let forward = Some(MouseButton::Navigate(NavigationDirection::Forward));
+        // X11 reports buttons 8/9, Win32 reports XBUTTON1/XBUTTON2 as 1/2.
+        assert_eq!(mouse_button(TaoMouseButton::Other(8), Os::Linux), back);
+        assert_eq!(mouse_button(TaoMouseButton::Other(9), Os::Linux), forward);
+        assert_eq!(mouse_button(TaoMouseButton::Other(1), Os::Windows), back);
+        assert_eq!(mouse_button(TaoMouseButton::Other(2), Os::Windows), forward);
         assert_eq!(
-            mouse_button(TaoMouseButton::Other(8)),
-            MouseButton::Navigate(NavigationDirection::Back)
+            mouse_button(TaoMouseButton::Right, Os::Linux),
+            Some(MouseButton::Right)
         );
-        assert_eq!(mouse_button(TaoMouseButton::Right), MouseButton::Right);
+    }
+
+    #[test]
+    fn unknown_buttons_are_dropped_not_left_clicks() {
+        assert_eq!(mouse_button(TaoMouseButton::Other(1), Os::Linux), None);
+        assert_eq!(mouse_button(TaoMouseButton::Other(8), Os::Windows), None);
+        assert_eq!(mouse_button(TaoMouseButton::Other(12), Os::Mac), None);
+    }
+
+    fn mods(control: bool, alt: bool, shift: bool, platform: bool) -> Modifiers {
+        Modifiers {
+            control,
+            alt,
+            shift,
+            platform,
+            function: false,
+        }
+    }
+
+    #[test]
+    fn plain_and_shifted_keys_type_text_everywhere() {
+        for os in [Os::Linux, Os::Windows, Os::Mac] {
+            assert!(produces_text(&mods(false, false, false, false), os));
+            assert!(produces_text(&mods(false, false, true, false), os));
+        }
+    }
+
+    #[test]
+    fn option_types_text_on_macos() {
+        // Option+L is `@` on a German Mac layout.
+        assert!(produces_text(&mods(false, true, false, false), Os::Mac));
+        assert!(produces_text(&mods(false, true, true, false), Os::Mac));
+        assert!(!produces_text(&mods(true, false, false, false), Os::Mac));
+        assert!(!produces_text(&mods(false, false, false, true), Os::Mac));
+    }
+
+    #[test]
+    fn altgr_types_text_on_windows() {
+        // Windows reports AltGr as Ctrl+Alt (AltGr+Q is `@` on German layouts).
+        assert!(produces_text(&mods(true, true, false, false), Os::Windows));
+        assert!(!produces_text(
+            &mods(true, false, false, false),
+            Os::Windows
+        ));
+        assert!(!produces_text(
+            &mods(false, true, false, false),
+            Os::Windows
+        ));
+        assert!(!produces_text(&mods(true, true, false, true), Os::Windows));
+    }
+
+    #[test]
+    fn windows_ctrl_alt_types_only_altgr_characters() {
+        let ctrl_alt = mods(true, true, false, false);
+        // German AltGr+Q: the layout produced a different character.
+        assert_eq!(
+            typed_char(Some("@"), "q", &ctrl_alt, Os::Windows).as_deref(),
+            Some("@")
+        );
+        // US Ctrl+Alt+A: no AltGr layer, so it is a shortcut.
+        assert_eq!(typed_char(Some("a"), "a", &ctrl_alt, Os::Windows), None);
+        assert_eq!(typed_char(Some("A"), "a", &ctrl_alt, Os::Windows), None);
+        // Without Ctrl+Alt the character is typed as is.
+        let plain = mods(false, false, false, false);
+        assert_eq!(
+            typed_char(Some("a"), "a", &plain, Os::Windows).as_deref(),
+            Some("a")
+        );
+        assert_eq!(typed_char(None, "enter", &plain, Os::Windows), None);
+    }
+
+    #[test]
+    fn linux_shortcuts_type_no_text() {
+        // AltGr is ISO_Level3_Shift on X11/Wayland, not a reported modifier.
+        assert!(!produces_text(&mods(true, false, false, false), Os::Linux));
+        assert!(!produces_text(&mods(false, true, false, false), Os::Linux));
+        assert!(!produces_text(&mods(true, true, false, false), Os::Linux));
+        assert!(!produces_text(&mods(false, false, false, true), Os::Linux));
     }
 }
