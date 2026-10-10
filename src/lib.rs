@@ -43,6 +43,19 @@ mod runtime;
 
 #[cfg(gpui_android)]
 mod android;
+#[cfg(gpui_ios)]
+mod ios;
+// The hardware key mapping is plain Rust: test it on every host.
+#[cfg(all(test, not(gpui_ios)))]
+#[path = "ios/keys.rs"]
+#[allow(dead_code)]
+mod ios_keys;
+
+/// The active mobile platform layer (keyboard, clipboard, appearance).
+#[cfg(gpui_android)]
+use android as mobile;
+#[cfg(gpui_ios)]
+use ios as mobile;
 
 pub use error::GpuiError;
 pub use gpui;
@@ -128,7 +141,7 @@ pub fn init_with(app: &mut tauri::App<Wry>, config: GpuiConfig) -> Result<(), Gp
     {
         let _ = (app, config);
         Err(GpuiError::UnsupportedOperation {
-            operation: "tauri-plugin-gpui on this target (Android needs the `mobile` feature; iOS is not supported yet)",
+            operation: "tauri-plugin-gpui on mobile without the `mobile` feature",
         })
     }
 }

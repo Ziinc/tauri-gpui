@@ -69,30 +69,6 @@ pub(crate) fn keystroke(key_code: i32, unicode: i32, meta: i32) -> Option<Keystr
     })
 }
 
-/// Keystroke for one character of IME-committed text.
-pub(crate) fn char_keystroke(c: char) -> Keystroke {
-    match c {
-        '\n' => Keystroke {
-            modifiers: Modifiers::default(),
-            key: "enter".into(),
-            key_char: None,
-        },
-        ' ' => Keystroke {
-            modifiers: Modifiers::default(),
-            key: "space".into(),
-            key_char: Some(" ".into()),
-        },
-        c => Keystroke {
-            modifiers: Modifiers {
-                shift: c.is_uppercase(),
-                ..Modifiers::default()
-            },
-            key: c.to_lowercase().to_string(),
-            key_char: Some(c.to_string()),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,12 +102,5 @@ mod tests {
     fn modifier_keys_alone_are_ignored() {
         // KEYCODE_SHIFT_LEFT has no character.
         assert!(keystroke(59, 0, META_SHIFT_ON).is_none());
-    }
-
-    #[test]
-    fn committed_newline_is_enter() {
-        assert_eq!(char_keystroke('\n').key, "enter");
-        let upper = char_keystroke('Q');
-        assert_eq!((upper.key.as_str(), upper.modifiers.shift), ("q", true));
     }
 }
