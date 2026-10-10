@@ -173,6 +173,8 @@ One GPUI window per app is supported on iOS. There is no system back action, so 
 
 As on Android, debug builds must embed GPUI assets (`rust-embed`'s `debug-embed` with gpui-kit).
 
+Build the app's library as `staticlib` (plus `rlib` for desktop), without `cdylib`: GPUI's `core-video` dependency asks rustc to link the OpenGL framework, which iOS lacks. The plugin stubs the three CGL symbols that end up referenced, so Xcode's link of the static library succeeds.
+
 `libc` 0.2.190 made the `_dyld_*` functions macOS-only, which breaks `backtrace` (and with it GPUI) on iOS. Until that is fixed upstream, keep `libc` at 0.2.189 in iOS apps:
 
 ```sh

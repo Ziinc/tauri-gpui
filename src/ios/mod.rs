@@ -12,6 +12,7 @@
 //! the keyboard posts its frame notification right away), so every callback
 //! becomes a [`ViewEvent`] queued for [`crate::runtime::Runtime::drain`].
 
+mod cgl;
 pub(crate) mod keys;
 
 use std::{
