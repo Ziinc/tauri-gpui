@@ -374,6 +374,9 @@ impl InputView {
     fn animate_keyboard(&self, end: f64, notification: &NSNotification) {
         let mtm = self.mtm();
         let (duration, curve) = keyboard_animation(notification);
+        log::debug!(
+            "tauri-plugin-gpui: keyboard overlap -> {end} over {duration}s (curve {curve})"
+        );
         KEYBOARD.with(|keyboard| {
             let mut keyboard = keyboard.borrow_mut();
             let keyboard = keyboard.get_or_insert_with(|| {
@@ -553,7 +556,11 @@ pub(crate) fn show_keyboard() {
     log::debug!("tauri-plugin-gpui: showing the software keyboard");
     with_view(|view| {
         if !view.isFirstResponder() && !view.becomeFirstResponder() {
-            log::warn!("tauri-plugin-gpui: the input view could not become first responder");
+            log::warn!(
+                "tauri-plugin-gpui: the input view could not become first responder (in window: {}, key: {})",
+                view.window().is_some(),
+                view.window().is_some_and(|window| window.isKeyWindow())
+            );
         }
     });
 }

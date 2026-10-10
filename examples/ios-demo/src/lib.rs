@@ -230,7 +230,7 @@ impl DemoLogger {
 
 impl log::Log for DemoLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Info
+        metadata.level() <= log::Level::Info || metadata.target().starts_with("tauri_plugin_gpui")
     }
 
     fn log(&self, record: &log::Record) {
@@ -255,7 +255,7 @@ fn init_logging() {
     let path = std::env::temp_dir().join("ios-demo.log");
     *LOGGER.file.lock().unwrap_or_else(|e| e.into_inner()) = std::fs::File::create(path).ok();
     if log::set_logger(&LOGGER).is_ok() {
-        log::set_max_level(log::LevelFilter::Info);
+        log::set_max_level(log::LevelFilter::Debug);
     }
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
