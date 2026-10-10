@@ -78,6 +78,16 @@ pub(crate) struct ClickState {
     pub count: usize,
 }
 
+/// What GPUI has told the window about its focused text input; the Android
+/// runtime reads it after the frame (see `runtime::android::input`).
+#[cfg(gpui_android)]
+#[derive(Default)]
+pub(crate) struct TextInputSignals {
+    pub focused: bool,
+    /// The input's selection or content may have changed since the last look.
+    pub dirty: bool,
+}
+
 pub(crate) struct WindowState {
     pub renderer: Option<WgpuRenderer>,
     pub physical_size: Size<DevicePixels>,
@@ -101,6 +111,8 @@ pub(crate) struct WindowState {
     /// System bar and soft keyboard regions (mobile only).
     #[cfg(gpui_android)]
     pub insets: gpui::WindowInsets,
+    #[cfg(gpui_android)]
+    pub text_input: TextInputSignals,
 }
 
 /// State shared between the GPUI-owned `PlatformWindow` and the plugin
@@ -206,6 +218,22 @@ impl WindowInner {
                 state.input_handler = Some(handler);
             }
         }
+    }
+
+    /// Notes that the text input's focus (`Some`) or selection and content
+    /// changed, and wakes the loop so the Android runtime looks at it after
+    /// the frame. GPUI may hold the input handler right now, so nothing is
+    /// read here.
+    #[cfg(gpui_android)]
+    pub fn text_input_changed(&self, focused: Option<bool>) {
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(focused) = focused {
+                state.text_input.focused = focused;
+            }
+            state.text_input.dirty = true;
+        }
+        self.waker.wake();
     }
 
     /// Returns the click count for a mouse-down at `position`.
@@ -672,9 +700,16 @@ impl PlatformWindow for TauriGpuiWindow {
     #[cfg(gpui_android)]
     fn text_input_state_changed(&self, change: gpui::TextInputStateChange) {
         match change {
-            gpui::TextInputStateChange::FocusGained => crate::android::show_keyboard(),
-            gpui::TextInputStateChange::FocusLost => crate::android::hide_keyboard(),
-            _ => {}
+            gpui::TextInputStateChange::FocusGained => {
+                crate::android::show_keyboard();
+                self.inner.text_input_changed(Some(true));
+            }
+            gpui::TextInputStateChange::FocusLost => {
+                crate::android::hide_keyboard();
+                self.inner.text_input_changed(Some(false));
+            }
+            gpui::TextInputStateChange::SelectionChanged
+            | gpui::TextInputStateChange::ContentChanged => self.inner.text_input_changed(None),
         }
     }
 
@@ -716,5 +751,7 @@ pub(crate) fn default_window_state(
         last_key_text: None,
         #[cfg(gpui_android)]
         insets: gpui::WindowInsets::default(),
+        #[cfg(gpui_android)]
+        text_input: TextInputSignals::default(),
     }
 }

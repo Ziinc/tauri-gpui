@@ -69,6 +69,48 @@ pub(crate) fn keystroke(key_code: i32, unicode: i32, meta: i32) -> Option<Keystr
     })
 }
 
+/// A text editing action from the native selection toolbar. The codes match
+/// `GpuiView.ACTION_*`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EditAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+impl EditAction {
+    pub(crate) fn from_code(code: i32) -> Option<Self> {
+        Some(match code {
+            0 => Self::Cut,
+            1 => Self::Copy,
+            2 => Self::Paste,
+            3 => Self::SelectAll,
+            _ => return None,
+        })
+    }
+
+    /// The shortcut text inputs bind for the action (`secondary-x` and so on,
+    /// which is `ctrl` off macOS). Sending the keystroke makes the focused
+    /// input run its own action and use GPUI's clipboard.
+    pub(crate) fn keystroke(self) -> Keystroke {
+        Keystroke {
+            modifiers: Modifiers {
+                control: true,
+                ..Modifiers::default()
+            },
+            key: match self {
+                Self::Cut => "x",
+                Self::Copy => "c",
+                Self::Paste => "v",
+                Self::SelectAll => "a",
+            }
+            .into(),
+            key_char: None,
+        }
+    }
+}
+
 /// Keystroke for one character of IME-committed text.
 pub(crate) fn char_keystroke(c: char) -> Keystroke {
     match c {
@@ -126,6 +168,18 @@ mod tests {
     fn modifier_keys_alone_are_ignored() {
         // KEYCODE_SHIFT_LEFT has no character.
         assert!(keystroke(59, 0, META_SHIFT_ON).is_none());
+    }
+
+    #[test]
+    fn edit_actions_are_ctrl_shortcuts() {
+        let keys: Vec<_> = (0..4)
+            .map(|code| EditAction::from_code(code).unwrap().keystroke())
+            .collect();
+        let names: Vec<_> = keys.iter().map(|k| k.key.as_str()).collect();
+        assert_eq!(names, ["x", "c", "v", "a"]);
+        assert!(keys.iter().all(|k| k.modifiers == modifiers(META_CTRL_ON)));
+        assert!(keys.iter().all(|k| k.key_char.is_none()));
+        assert_eq!(EditAction::from_code(4), None);
     }
 
     #[test]

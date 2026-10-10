@@ -612,6 +612,9 @@ impl Runtime {
             }
         }
 
+        #[cfg(gpui_android)]
+        self.sync_text_input();
+
         let more_work = self.dispatcher.has_main_work()
             || !self.mounts.borrow().is_empty()
             || !self.deferred.borrow().is_empty()

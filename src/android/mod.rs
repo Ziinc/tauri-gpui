@@ -8,6 +8,7 @@
 //! thread, which drains the queue in [`crate::runtime::Runtime::drain`].
 
 pub(crate) mod keys;
+pub(crate) mod selection;
 
 use std::{
     collections::VecDeque,
@@ -71,6 +72,16 @@ pub(crate) enum ViewEvent {
     Appearance {
         dark: bool,
     },
+    /// A long press, in view pixels (Android's own detection, so it also
+    /// covers inputs GPUI draws itself).
+    LongPress {
+        x: f32,
+        y: f32,
+    },
+    /// An item chosen in the native selection toolbar.
+    EditAction(keys::EditAction),
+    /// Text from Android Autofill for the focused input.
+    Autofill(String),
 }
 
 /// Signalled once the renderer no longer references a destroyed surface.
@@ -224,6 +235,67 @@ pub(crate) fn set_clipboard_text(text: &str) {
     });
 }
 
+/// Loads the app's Tauri plugins, which Tauri skips when there is no WebView.
+pub(crate) fn load_plugins() {
+    with_view("loadPlugins", |env, view| {
+        env.call_method(view, "loadPlugins", "()V", &[]).map(drop)
+    });
+}
+
+/// Shows (or moves) the native selection toolbar over `rect`.
+pub(crate) fn show_selection_toolbar(rect: selection::ViewRect, has_selection: bool) {
+    with_view("showSelectionToolbar", |env, view| {
+        env.call_method(
+            view,
+            "showSelectionToolbar",
+            "(IIIIZ)V",
+            &[
+                JValue::Int(rect.left),
+                JValue::Int(rect.top),
+                JValue::Int(rect.right),
+                JValue::Int(rect.bottom),
+                JValue::Bool(has_selection.into()),
+            ],
+        )
+        .map(drop)
+    });
+}
+
+pub(crate) fn hide_selection_toolbar() {
+    with_view("hideSelectionToolbar", |env, view| {
+        env.call_method(view, "hideSelectionToolbar", "()V", &[])
+            .map(drop)
+    });
+}
+
+/// Tells the view about the focused input (for Autofill): its text and the
+/// rectangle it occupies.
+pub(crate) fn set_autofill_input(text: &str, rect: selection::ViewRect) {
+    with_view("setAutofillInput", |env, view| {
+        let text = env.new_string(text)?;
+        env.call_method(
+            view,
+            "setAutofillInput",
+            "(Ljava/lang/String;IIII)V",
+            &[
+                JValue::Object(&text),
+                JValue::Int(rect.left),
+                JValue::Int(rect.top),
+                JValue::Int(rect.right),
+                JValue::Int(rect.bottom),
+            ],
+        )
+        .map(drop)
+    });
+}
+
+pub(crate) fn clear_autofill_input() {
+    with_view("clearAutofillInput", |env, view| {
+        env.call_method(view, "clearAutofillInput", "()V", &[])
+            .map(drop)
+    });
+}
+
 // Registration.
 
 /// Registers the `GpuiView` natives. Runs on the UI thread before Tauri
@@ -290,6 +362,17 @@ pub(crate) fn register_natives(env: &mut JNIEnv, activity: &JObject) -> jni::err
             method("nativeBack", "()V", native_back as *mut c_void),
             method("nativeLifecycle", "(I)V", native_lifecycle as *mut c_void),
             method("nativeAppearance", "(Z)V", native_appearance as *mut c_void),
+            method("nativeLongPress", "(FF)V", native_long_press as *mut c_void),
+            method(
+                "nativeEditAction",
+                "(I)V",
+                native_edit_action as *mut c_void,
+            ),
+            method(
+                "nativeAutofill",
+                "(Ljava/lang/String;)V",
+                native_autofill as *mut c_void,
+            ),
         ],
     )
 }
@@ -417,4 +500,20 @@ extern "system" fn native_lifecycle(_: JNIEnv, _: JClass, phase: jint) {
 extern "system" fn native_appearance(_: JNIEnv, _: JClass, dark: jboolean) {
     *DARK.lock().unwrap() = dark != 0;
     push(ViewEvent::Appearance { dark: dark != 0 });
+}
+
+extern "system" fn native_long_press(_: JNIEnv, _: JClass, x: jfloat, y: jfloat) {
+    push(ViewEvent::LongPress { x, y });
+}
+
+extern "system" fn native_edit_action(_: JNIEnv, _: JClass, action: jint) {
+    if let Some(action) = keys::EditAction::from_code(action) {
+        push(ViewEvent::EditAction(action));
+    }
+}
+
+extern "system" fn native_autofill(mut env: JNIEnv, _: JClass, text: JString) {
+    if let Some(text) = string(&mut env, &text) {
+        push(ViewEvent::Autofill(text));
+    }
 }
