@@ -393,3 +393,10 @@ pub(crate) fn set_clipboard_text(text: &str) {
     // SAFETY: a plain property write.
     unsafe { UIPasteboard::generalPasteboard().setString(Some(&NSString::from_str(text))) };
 }
+
+/// A new, detached `CAMetalLayer`.
+pub(crate) fn metal_layer() -> Option<Retained<AnyObject>> {
+    let class = objc2::runtime::AnyClass::get(c"CAMetalLayer")?;
+    // SAFETY: `+new` on a CALayer subclass returns a retained instance.
+    unsafe { msg_send![class, new] }
+}

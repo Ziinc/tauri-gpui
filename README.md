@@ -175,6 +175,8 @@ As on Android, debug builds must embed GPUI assets (`rust-embed`'s `debug-embed`
 
 Build the app's library as `staticlib` (plus `rlib` for desktop), without `cdylib`: GPUI's `core-video` dependency asks rustc to link the OpenGL framework, which iOS lacks. The plugin stubs the three CGL symbols that end up referenced, so Xcode's link of the static library succeeds.
 
+`gpui_wgpu` only creates Vulkan and GL instances, so on iOS the plugin creates the shared GPU context on Metal before the first renderer. GPU device-loss recovery still goes through `gpui_wgpu`'s Vulkan/GL instance and will fail on iOS.
+
 `libc` 0.2.190 made the `_dyld_*` functions macOS-only, which breaks `backtrace` (and with it GPUI) on iOS. Until that is fixed upstream, keep `libc` at 0.2.189 in iOS apps:
 
 ```sh
