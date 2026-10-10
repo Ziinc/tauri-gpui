@@ -133,10 +133,13 @@ define_class!(
         #[unsafe(method(traitCollectionDidChange:))]
         fn trait_collection_did_change(&self, previous: Option<&UITraitCollection>) {
             let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
-            let dark = style_is_dark(&self.traitCollection());
-            if DARK.with(|d| d.replace(dark)) != dark {
-                push(ViewEvent::Appearance { dark });
-            }
+            self.check_appearance();
+        }
+
+        /// Target of the iOS 17+ trait registration, see `install`.
+        #[unsafe(method(gpuiTraitsDidChange))]
+        fn traits_did_change(&self) {
+            self.check_appearance();
         }
 
         #[unsafe(method(pressesBegan:withEvent:))]
@@ -244,6 +247,13 @@ define_class!(
 );
 
 impl InputView {
+    fn check_appearance(&self) {
+        let dark = style_is_dark(&self.traitCollection());
+        if DARK.with(|d| d.replace(dark)) != dark {
+            push(ViewEvent::Appearance { dark });
+        }
+    }
+
     fn new(mtm: MainThreadMarker, frame: CGRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(());
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -347,6 +357,21 @@ pub(crate) unsafe fn install(view: *mut std::ffi::c_void) {
         );
     }
 
+    // iOS 17+ deprecates `traitCollectionDidChange:` and, on iOS 18, no longer
+    // reliably calls it; register for the interface style instead.
+    if input.respondsToSelector(sel!(registerForTraitChanges:withTarget:action:))
+        && let Some(style) = objc2::runtime::AnyClass::get(c"UITraitUserInterfaceStyle")
+    {
+        let traits = objc2_foundation::NSArray::<AnyObject>::from_slice(&[style.as_ref()]);
+        let _: Option<Retained<AnyObject>> = unsafe {
+            msg_send![
+                &*input,
+                registerForTraitChanges: &*traits,
+                withTarget: &*input,
+                action: sel!(gpuiTraitsDidChange)
+            ]
+        };
+    }
     DARK.with(|dark| dark.set(style_is_dark(&input.traitCollection())));
     push(ViewEvent::SafeArea(input.safeAreaInsets()));
     VIEW.with(|slot| *slot.borrow_mut() = Some(input));
