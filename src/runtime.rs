@@ -14,7 +14,7 @@ use std::{
 };
 
 use gpui::{
-    AnyWindowHandle, App, Application, ApplicationHandle, Bounds, QuitMode, WindowBounds,
+    AnyWindowHandle, App, Application, ApplicationHandle, AsyncApp, Bounds, QuitMode, WindowBounds,
     WindowOptions,
 };
 #[cfg(not(gpui_android))]
@@ -63,7 +63,12 @@ struct Mount {
 
 pub(crate) struct Runtime {
     main_thread: ThreadId,
-    app: ApplicationHandle,
+    /// Keeps the shared App alive; all access goes through `cx`.
+    _app: ApplicationHandle,
+    /// Unlike `ApplicationHandle::update`, `AsyncApp::update` runs a full
+    /// GPUI update cycle, flushing the effects (`defer`, `notify`, `emit`,
+    /// observers) the closure queued.
+    cx: AsyncApp,
     platform: Rc<TauriPlatform>,
     dispatcher: Arc<TauriDispatcher>,
     waker: Arc<LoopWaker>,
@@ -134,10 +139,11 @@ pub(crate) fn initialize(app: AppHandle<Wry>, config: GpuiConfig) -> Result<(), 
         application = configure(application);
     }
 
+    let app = application.run_embedded(|_| {});
     let runtime = Box::leak(Box::new(Runtime {
         main_thread: thread::current().id(),
-        // Filled below; `run_embedded` needs the launch callback first.
-        app: application.run_embedded(|_| {}),
+        cx: app.to_async(),
+        _app: app,
         platform,
         dispatcher,
         waker,
@@ -209,7 +215,7 @@ impl Runtime {
             return Err(GpuiError::Reentrant);
         }
         let _guard = self.enter();
-        Ok(self.app.update(f))
+        Ok(self.cx.update(f))
     }
 
     pub(crate) fn attach(

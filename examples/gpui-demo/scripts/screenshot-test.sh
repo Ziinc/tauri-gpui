@@ -12,7 +12,7 @@ OUT="$(realpath -m "${1:-$ROOT/target/gpui-demo-screenshots}")"
 DISPLAY_NUM="${DISPLAY_NUM:-99}"
 
 rm -rf "$OUT" && mkdir -p "$OUT"
-cargo build --manifest-path "$ROOT/Cargo.toml" -p gpui-demo
+cargo build --manifest-path "$ROOT/examples/gpui-demo/Cargo.toml"
 
 Xvfb ":$DISPLAY_NUM" -screen 0 1600x1000x24 -nolisten tcp &
 XVFB_PID=$!
@@ -26,7 +26,7 @@ sleep 1
 # WebKitGTK cannot use GPU compositing on a virtual display.
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 export RUST_LOG="${RUST_LOG:-warn}"
-GPUI_DEMO_AUTOTEST="$OUT" timeout 180 "$ROOT/target/debug/gpui-demo"
+GPUI_DEMO_AUTOTEST="$OUT" timeout 180 "$ROOT/examples/gpui-demo/target/debug/gpui-demo"
 STATUS=$?
 echo "screenshots and report.json written to $OUT"
 exit $STATUS

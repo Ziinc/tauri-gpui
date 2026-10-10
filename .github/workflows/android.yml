@@ -21,6 +21,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: android
+          workspaces: |
+            .
+            examples/android-demo
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

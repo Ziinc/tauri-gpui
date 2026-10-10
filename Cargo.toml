@@ -16,13 +16,10 @@ categories = ["gui"]
 links = "tauri-plugin-gpui"
 
 [workspace]
-members = [".", "examples/gpui-demo", "examples/android-demo"]
-
-# wgpu turns on shader debug info in debug builds, and the Android emulator's
-# SwiftShader Vulkan rejects the SPIR-V that produces. Build wgpu-types as in
-# release so its default instance flags leave that off.
-[profile.dev.package.wgpu-types]
-debug-assertions = false
+# The demo is its own workspace so gpui-kit (a demo-only dependency) never
+# enters this crate's lockfile or `--workspace` builds.
+members = [".", "examples/basic"]
+exclude = ["examples/gpui-demo", "examples/android-demo"]
 
 [features]
 default = []
