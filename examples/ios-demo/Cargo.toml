@@ -9,8 +9,11 @@ publish = false
 
 [lib]
 # `staticlib` is what the Xcode project links; `rlib` keeps `cargo run` working on desktop.
+# No `cdylib`: GPUI's core-video dependency pulls in `cgl`, which asks to link
+# the OpenGL framework, and iOS has none. A static library leaves linking to
+# Xcode, which dead-strips the unused OpenGL calls.
 name = "ios_demo_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["staticlib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
