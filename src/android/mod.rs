@@ -236,6 +236,7 @@ pub(crate) fn set_clipboard_text(text: &str) {
 }
 
 /// Loads the app's Tauri plugins, which Tauri skips when there is no WebView.
+/// They get a stand-in WebView, not a real one.
 pub(crate) fn load_plugins() {
     with_view("loadPlugins", |env, view| {
         env.call_method(view, "loadPlugins", "()V", &[]).map(drop)

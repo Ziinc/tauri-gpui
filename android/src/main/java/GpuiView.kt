@@ -127,7 +127,14 @@ class GpuiView(private val activity: Activity) : SurfaceView(activity), SurfaceH
      * tauri-plugin-biometric set up their state in `load`, so they fail
      * without it. Rust calls this once the first GPUI window has mounted, by
      * which time the app's plugins are registered; plugins registered later
-     * are not loaded. The WebView is never attached to a window.
+     * are not loaded.
+     *
+     * The plugins get a [DetachedWebView], not a real one: creating the
+     * process's first WebView registers the WebView provider as a package
+     * dependency, and Android then relaunches the activity, which GPUI does
+     * not survive. The stand-in is never attached or initialised, so a plugin
+     * that drives the WebView (evaluating JS, say) would fail. None of the
+     * plugins in use do.
      */
     fun loadPlugins() {
         activity.runOnUiThread {
@@ -135,12 +142,23 @@ class GpuiView(private val activity: Activity) : SurfaceView(activity), SurfaceH
             pluginsLoaded = true
             try {
                 val manager = activity.javaClass.getMethod("getPluginManager").invoke(activity) as PluginManager
-                manager.onWebViewCreated(WebView(activity))
+                manager.onWebViewCreated(newDetachedWebView())
                 Log.i(TAG, "loaded Android plugins")
             } catch (e: Throwable) {
                 Log.e(TAG, "loading Android plugins failed", e)
             }
         }
+    }
+
+    /**
+     * A [DetachedWebView] allocated without running any constructor, the way
+     * Gson's `UnsafeAllocator` does on Android.
+     */
+    private fun newDetachedWebView(): WebView {
+        val unsafeClass = Class.forName("sun.misc.Unsafe")
+        val field = unsafeClass.getDeclaredField("theUnsafe").apply { isAccessible = true }
+        val allocate = unsafeClass.getMethod("allocateInstance", Class::class.java)
+        return allocate.invoke(field.get(null), DetachedWebView::class.java) as WebView
     }
 
     // Selection toolbar.
@@ -437,6 +455,18 @@ class GpuiView(private val activity: Activity) : SurfaceView(activity), SurfaceH
             nativeDeleteSurroundingText(beforeLength, afterLength)
             return true
         }
+    }
+
+    /**
+     * Stand-in handed to `Plugin.load`. Its constructor never runs, so
+     * Chromium is not initialised. Tauri's `AppPlugin` is the only caller of
+     * WebView methods (in its back-button handler): `canGoBack` and `goBack`
+     * are overridden so back falls through to the activity, as with no WebView.
+     */
+    private class DetachedWebView(context: Context) : WebView(context) {
+        override fun canGoBack(): Boolean = false
+
+        override fun goBack() {}
     }
 
     companion object {
