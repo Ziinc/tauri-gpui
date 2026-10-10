@@ -25,7 +25,7 @@ use super::dispatcher::LoopWaker;
 
 /// Native handles of a Tauri window, captured once at attach time so the
 /// renderer never has to round-trip through the Tauri runtime for them.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct RawWindow {
     pub window: RawWindowHandle,
     pub display: RawDisplayHandle,
@@ -64,6 +64,10 @@ pub(crate) struct Callbacks {
     pub close: Option<Box<dyn FnOnce()>>,
     pub hit_test_window_control: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
     pub appearance_changed: Option<Box<dyn FnMut()>>,
+    #[cfg(gpui_android)]
+    pub insets_changed: Option<Box<dyn FnMut(gpui::WindowInsets)>>,
+    #[cfg(gpui_android)]
+    pub back: Option<Box<dyn FnMut()>>,
 }
 
 #[derive(Default)]
@@ -94,6 +98,9 @@ pub(crate) struct WindowState {
     /// Text inserted from the last key press, used to drop the duplicate
     /// commit some TAO backends send through `ReceivedImeText`.
     pub last_key_text: Option<String>,
+    /// System bar and soft keyboard regions (mobile only).
+    #[cfg(gpui_android)]
+    pub insets: gpui::WindowInsets,
 }
 
 /// State shared between the GPUI-owned `PlatformWindow` and the plugin
@@ -101,7 +108,8 @@ pub(crate) struct WindowState {
 pub(crate) struct WindowInner {
     pub label: String,
     pub tauri_window: tauri::Window<Wry>,
-    pub raw: RawWindow,
+    /// Replaced when Android recreates the surface.
+    pub raw: Cell<RawWindow>,
     pub state: RefCell<WindowState>,
     pub callbacks: RefCell<Callbacks>,
     pub frame_pending: Cell<bool>,
@@ -176,10 +184,23 @@ impl WindowInner {
         }
     }
 
-    fn insert_text(&self, text: &str) {
+    pub fn insert_text(&self, text: &str) {
         let handler = self.state.borrow_mut().input_handler.take();
         if let Some(mut handler) = handler {
             handler.replace_text_in_range(None, text);
+            let mut state = self.state.borrow_mut();
+            if state.input_handler.is_none() {
+                state.input_handler = Some(handler);
+            }
+        }
+    }
+
+    /// Runs `f` with GPUI's input handler for the focused text input, if any.
+    #[cfg(gpui_android)]
+    pub fn with_input_handler(&self, f: impl FnOnce(&mut PlatformInputHandler)) {
+        let handler = self.state.borrow_mut().input_handler.take();
+        if let Some(mut handler) = handler {
+            f(&mut handler);
             let mut state = self.state.borrow_mut();
             if state.input_handler.is_none() {
                 state.input_handler = Some(handler);
@@ -328,14 +349,14 @@ impl HasWindowHandle for TauriGpuiWindow {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         // SAFETY: valid while the Tauri window is alive, which outlives this
         // object in every path except teardown (where GPUI no longer draws).
-        Ok(unsafe { WindowHandle::borrow_raw(self.inner.raw.window) })
+        Ok(unsafe { WindowHandle::borrow_raw(self.inner.raw.get().window) })
     }
 }
 
 impl HasDisplayHandle for TauriGpuiWindow {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         // SAFETY: as above.
-        Ok(unsafe { DisplayHandle::borrow_raw(self.inner.raw.display) })
+        Ok(unsafe { DisplayHandle::borrow_raw(self.inner.raw.get().display) })
     }
 }
 
@@ -462,29 +483,41 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn minimize(&self) {
-        let window = self.inner.tauri_window.clone();
-        (self.inner.defer)(Box::new(move || {
-            let _ = window.minimize();
-        }));
+        // Android windows have no such states.
+        #[cfg(not(gpui_android))]
+        {
+            let window = self.inner.tauri_window.clone();
+            (self.inner.defer)(Box::new(move || {
+                let _ = window.minimize();
+            }));
+        }
     }
 
     fn zoom(&self) {
-        let window = self.inner.tauri_window.clone();
-        (self.inner.defer)(Box::new(move || {
-            let _ = if window.is_maximized().unwrap_or(false) {
-                window.unmaximize()
-            } else {
-                window.maximize()
-            };
-        }));
+        // Android windows have no such states.
+        #[cfg(not(gpui_android))]
+        {
+            let window = self.inner.tauri_window.clone();
+            (self.inner.defer)(Box::new(move || {
+                let _ = if window.is_maximized().unwrap_or(false) {
+                    window.unmaximize()
+                } else {
+                    window.maximize()
+                };
+            }));
+        }
     }
 
     fn toggle_fullscreen(&self) {
-        let window = self.inner.tauri_window.clone();
-        (self.inner.defer)(Box::new(move || {
-            let fullscreen = window.is_fullscreen().unwrap_or(false);
-            let _ = window.set_fullscreen(!fullscreen);
-        }));
+        // Android windows have no such states.
+        #[cfg(not(gpui_android))]
+        {
+            let window = self.inner.tauri_window.clone();
+            (self.inner.defer)(Box::new(move || {
+                let fullscreen = window.is_fullscreen().unwrap_or(false);
+                let _ = window.set_fullscreen(!fullscreen);
+            }));
+        }
     }
 
     fn is_fullscreen(&self) -> bool {
@@ -561,7 +594,7 @@ impl PlatformWindow for TauriGpuiWindow {
                 "GPU device lost; recovering renderer for `{}`",
                 self.inner.label
             );
-            if let Err(error) = renderer.recover(&self.inner.raw) {
+            if let Err(error) = renderer.recover(&self.inner.raw.get()) {
                 log::error!("failed to recover GPUI renderer: {error:#}");
             }
             drop(state);
@@ -606,9 +639,48 @@ impl PlatformWindow for TauriGpuiWindow {
         unsupported("update_ime_position");
     }
 
+    #[cfg(gpui_android)]
+    fn insets(&self) -> gpui::WindowInsets {
+        self.inner.state.borrow().insets.clone()
+    }
+
+    #[cfg(gpui_android)]
+    fn on_insets_changed(&self, callback: Box<dyn FnMut(gpui::WindowInsets)>) {
+        self.inner.callbacks.borrow_mut().insets_changed = Some(callback);
+    }
+
+    #[cfg(gpui_android)]
+    fn set_back_handler(&self, callback: Box<dyn FnMut()>) {
+        self.inner.callbacks.borrow_mut().back = Some(callback);
+    }
+
+    #[cfg(gpui_android)]
+    fn set_back_enabled(&self, enabled: bool) {
+        crate::android::set_back_enabled(enabled);
+    }
+
+    #[cfg(gpui_android)]
+    fn show_soft_keyboard(&self) {
+        crate::android::show_keyboard();
+    }
+
+    #[cfg(gpui_android)]
+    fn hide_soft_keyboard(&self) {
+        crate::android::hide_keyboard();
+    }
+
+    #[cfg(gpui_android)]
+    fn text_input_state_changed(&self, change: gpui::TextInputStateChange) {
+        match change {
+            gpui::TextInputStateChange::FocusGained => crate::android::show_keyboard(),
+            gpui::TextInputStateChange::FocusLost => crate::android::hide_keyboard(),
+            _ => {}
+        }
+    }
+
     #[cfg(target_os = "windows")]
     fn get_raw_handle(&self) -> windows::Win32::Foundation::HWND {
-        match self.inner.raw.window {
+        match self.inner.raw.get().window {
             RawWindowHandle::Win32(handle) => {
                 windows::Win32::Foundation::HWND(handle.hwnd.get() as *mut core::ffi::c_void)
             }
@@ -642,5 +714,7 @@ pub(crate) fn default_window_state(
         fullscreen: false,
         maximized: false,
         last_key_text: None,
+        #[cfg(gpui_android)]
+        insets: gpui::WindowInsets::default(),
     }
 }

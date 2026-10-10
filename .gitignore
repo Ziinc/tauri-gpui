@@ -1,3 +1,4 @@
 /target
 /examples/gpui-demo/target
+/examples/android-demo/target
 /examples/*/gen/schemas

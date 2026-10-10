@@ -12,18 +12,21 @@ readme = "README.md"
 exclude = [".github", "docs"]
 keywords = ["tauri", "tauri-plugin", "gpui", "gui"]
 categories = ["gui"]
+# Lets the app's tauri-build find the Android library in `android/`.
+links = "tauri-plugin-gpui"
 
 [workspace]
 # The demo is its own workspace so gpui-kit (a demo-only dependency) never
 # enters this crate's lockfile or `--workspace` builds.
 members = [".", "examples/basic"]
-exclude = ["examples/gpui-demo"]
+exclude = ["examples/gpui-demo", "examples/android-demo"]
 
 [features]
 default = []
-# iOS/Android support via gpui-mobile. Off by default so desktop-only
-# consumers never compile the mobile dependency graph.
-mobile = ["dep:gpui-mobile"]
+# Android support (a SurfaceView-backed GPUI platform layer). Off by default;
+# the Android dependencies are also target-gated, so desktop builds never
+# compile them either way.
+mobile = ["dep:jni", "dep:ndk"]
 
 [dependencies]
 anyhow = "1"
@@ -37,7 +40,6 @@ tauri-runtime-wry = { version = "2.12", features = ["unstable"] }
 # GPUI from crates.io: `gpui-pre` is a published snapshot of zed's gpui (the
 # same crates gpui-kit / gpui-component build on). Renamed so code says `gpui`.
 gpui = { package = "gpui-pre", version = "=0.3.8", default-features = false }
-gpui-mobile = { version = "0.1", optional = true }
 
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
 arboard = { version = "3", default-features = false, features = ["image-data"] }
@@ -47,8 +49,17 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8", features = ["font-kit"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# Same major version Tauri uses, so `run_on_android_context` hands us its JNIEnv.
+jni = { version = "0.21", optional = true }
+ndk = { version = "0.9", default-features = false, optional = true }
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation"] }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
 
 [dev-dependencies]
 tauri = { version = "2.12", features = ["unstable", "test"] }

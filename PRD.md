@@ -4,7 +4,7 @@ Draft — architecture decisions captured to date.
 Summary
 tauri-plugin-gpui is a Tauri plugin that allows selected Tauri windows to use GPUI as their native content renderer instead of a WebView.
 The plugin is a rendering integration, not an alternative Tauri runtime. Tauri/TAO remains authoritative for application lifecycle, native windows, event dispatch, and window management. GPUI is permanently attached as the content renderer of an existing Tauri window.
-Prior art includes tauri-plugin-egui. Cross-platform/mobile GPUI support will use gpui-mobile, gated behind an optional Cargo feature to avoid increasing desktop-only compile times.
+Prior art includes tauri-plugin-egui. Mobile GPUI support is gated behind an optional Cargo feature to avoid increasing desktop-only compile times.
 Goals
 Render GPUI applications inside ordinary Tauri-owned native windows.
 Preserve Tauri's application, window, and event-loop abstractions.
@@ -12,7 +12,7 @@ Avoid a Tauri fork or GPUI fork.
 Allow multiple GPUI-backed Tauri windows to share one GPUI application context.
 Allow GPUI-backed and ordinary WebView-backed Tauri windows to coexist in one application.
 Keep the initial GPUI platform adapter deliberately small.
-Support mobile through gpui-mobile behind an opt-in feature.
+Support mobile behind an opt-in feature.
 Non-goals
 The initial version will not:
 Replace Tauri/TAO's event loop.
@@ -192,16 +192,16 @@ Desktop support is the default build configuration.
 Mobile support is opt-in:
 [features]
 default = []
-mobile = ["dep:gpui-mobile"]
+mobile = ["dep:jni", "dep:ndk"]
 Conceptually:
 [dependencies]
 tauri-plugin-gpui = "..."
 
 # Enable iOS/Android support when required
 tauri-plugin-gpui = { version = "...", features = ["mobile"] }
-The goal is that desktop-only consumers do not compile gpui-mobile or its mobile-specific dependency graph.
+The goal is that desktop-only consumers do not compile the mobile-specific dependency graph.
 Mobile architecture
-When the mobile feature is enabled, gpui-mobile is used as the basis for GPUI support on iOS and Android.
+GPUI core (gpui-pre 0.3.8) defines the mobile platform contract itself: raw touch input with a portable gesture recognizer, window insets, the soft keyboard, the back action and app lifecycle phases. The plugin therefore implements that contract directly on top of Tauri's Android activity instead of depending on gpui-mobile, whose platform layer owns the activity (NativeActivity) and so cannot share it with Tauri.
 The same ownership principle applies:
 Tauri Mobile
     │
@@ -213,10 +213,10 @@ Tauri Mobile
     tauri-plugin-gpui
             │
             ▼
-       gpui-mobile
+       GPUI mobile platform contract (gpui core)
             │
        GPUI rendering
-The plugin should reuse gpui-mobile rather than independently reimplementing GPUI's mobile platform support.
+The plugin reuses GPUI core's gesture recognizers and mobile window APIs rather than reimplementing them.
 Mobile-specific integration details remain to be validated during implementation/prototyping.
 Error handling
 Unsupported GPUI platform operations should fail explicitly where the GPUI API permits it.
@@ -293,6 +293,6 @@ Unsupported
 GPUI platform compatibility
 Minimum required adapter only
 Mobile
-gpui-mobile, optional mobile Cargo feature
+GPUI core mobile contract, optional mobile Cargo feature
 Desktop compile impact from mobile
 Mobile dependency disabled by default

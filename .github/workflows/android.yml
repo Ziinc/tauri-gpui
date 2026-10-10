@@ -1,0 +1,72 @@
+name: Android
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  android-demo:
+    # Builds examples/android-demo as a debug APK and drives it on an x86_64
+    # emulator (KVM is available on GitHub's Linux runners).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      NDK_VERSION: 27.0.12077973
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android,aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+          workspaces: |
+            .
+            examples/android-demo
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install NDK
+        run: |
+          sdkmanager --install "ndk;$NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: Lint (Android target)
+        run: cargo clippy -p tauri-plugin-gpui --features mobile --target aarch64-linux-android -- -D warnings
+      - name: Build debug APK
+        working-directory: examples/android-demo
+        # The Gradle project calls back into the CLI, so it must be a local
+        # npm install rather than a global one.
+        run: |
+          npm ci
+          npm run tauri -- android init --ci
+          npm run tauri -- android build --debug --apk --target x86_64 --target aarch64 --ci
+          cp gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk "$RUNNER_TEMP/android-demo.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-demo-apk
+          path: ${{ runner.temp }}/android-demo.apk
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Smoke test on the emulator
+        timeout-minutes: 20
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: examples/android-demo/scripts/android-smoke.sh ${{ runner.temp }}/android-demo.apk target/android-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-smoke
+          path: target/android-smoke

@@ -8304,6 +8304,7 @@ dependencies = [
  "log",
  "raw-window-handle",
  "tauri",
+ "tauri-plugin",
  "tauri-runtime-wry",
  "thiserror 2.0.21",
  "uuid",
