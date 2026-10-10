@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Installs examples/ios-demo on an iPhone simulator and checks, from the app's
 # console, that GPUI attaches and renders, honours the safe area, follows dark
-# mode, and survives a trip to the background. Screenshots go to the output
-# directory.
+# mode, survives a trip to the background, and that the keyboard inset
+# animates. Screenshots go to the output directory.
 #
 #   scripts/ios-smoke.sh <path/to/app> [output-dir]
 set -euo pipefail
@@ -70,6 +70,8 @@ device=$(xcrun simctl list devices available -j |
           | select(.name | startswith("iPhone"))][0].udid // empty')
 [ -n "$device" ] || fail "no iPhone simulator is available"
 echo "ios-smoke: using simulator $device"
+# A connected hardware keyboard would keep the software keyboard hidden.
+defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false || true
 xcrun simctl boot "$device" 2>/dev/null || true
 xcrun simctl bootstatus "$device" -b >/dev/null
 xcrun simctl ui "$device" appearance light
@@ -102,6 +104,26 @@ xcrun simctl launch "$device" "$bundle" >/dev/null
 wait_for 'visibility visible=true' 30
 sleep 2
 xcrun simctl io "$device" screenshot "$out/resumed.png" >/dev/null
+
+# Relaunched with the input focused, the software keyboard slides in. The
+# bottom inset must pass through intermediate values on its way from the
+# safe area to the keyboard's height, rather than jump.
+xcrun simctl launch --terminate-running-process \
+  --stdout="$out/stdout.log" --stderr="$out/stderr.log" "$device" "$bundle" --focus-input
+wait_for 'ios-demo: focusing input'
+sleep 3
+sync_log
+bottoms=$(sed -n '/ios-demo: focusing input/,$p' "$log" | grep -oE 'layout bottom=[0-9.]+' | cut -d= -f2)
+echo "ios-smoke: bottom insets:" $bottoms
+echo "$bottoms" | awk '
+  NR == 1 { first = $1 }
+  { values[NR] = $1; last = $1 }
+  END {
+    if (last < first + 100) { print "the keyboard inset never grew"; exit 1 }
+    for (i = 2; i < NR; i++) if (values[i] > first && values[i] < last) between++
+    if (between < 3) { print "the keyboard inset jumped (" between " intermediate values)"; exit 1 }
+  }' || fail "expected an animated keyboard inset"
+xcrun simctl io "$device" screenshot "$out/keyboard.png" >/dev/null
 
 sync_log
 if grep -qE 'PANIC|tauri-plugin-gpui: .*failed' "$log"; then

@@ -8,6 +8,13 @@
 //! (`UIKeyInput`, `pressesBegan:`), and it observes safe-area, keyboard frame,
 //! trait (dark mode) and application lifecycle changes.
 //!
+//! The keyboard notifications only carry the end frame plus a duration and a
+//! curve (usually UIKit's private keyboard curve), so the inset is animated by
+//! UIKit itself: a zero-width shadow view's height follows the same animation,
+//! and a `CADisplayLink` samples its presentation layer every frame while it
+//! runs. GPUI therefore sees the keyboard inset move in step with the
+//! keyboard.
+//!
 //! UIKit calls back synchronously, sometimes from inside a GPUI update (showing
 //! the keyboard posts its frame notification right away), so every callback
 //! becomes a [`ViewEvent`] queued for [`crate::runtime::Runtime::drain`].
@@ -28,16 +35,22 @@ use objc2::{
     runtime::{AnyObject, NSObjectProtocol, Sel},
     sel,
 };
-use objc2_core_foundation::{CGPoint, CGRect};
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSNotificationName, NSSet, NSString};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_foundation::{
+    NSNotification, NSNotificationCenter, NSNotificationName, NSRunLoop, NSRunLoopCommonModes,
+    NSSet, NSString,
+};
+use objc2_quartz_core::{CADisplayLink, CAFrameRateRange};
 use objc2_ui_kit::{
     UIApplicationDidBecomeActiveNotification, UIApplicationDidEnterBackgroundNotification,
     UIApplicationWillEnterForegroundNotification, UIApplicationWillResignActiveNotification,
-    UIColor, UIEdgeInsets, UIEvent, UIKeyInput, UIKeyboardFrameEndUserInfoKey,
+    UIColor, UIEdgeInsets, UIEvent, UIKeyInput, UIKeyboardAnimationCurveUserInfoKey,
+    UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
     UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIPasteboard, UIPress,
     UIPressesEvent, UIResponder, UITextAutocapitalizationType, UITextAutocorrectionType,
     UITextInputTraits, UITextSmartDashesType, UITextSmartQuotesType, UITextSpellCheckingType,
-    UITraitCollection, UITraitEnvironment, UIUserInterfaceStyle, UIView, UIViewAutoresizing,
+    UITraitCollection, UITraitEnvironment, UIUserInterfaceStyle, UIView, UIViewAnimationOptions,
+    UIViewAutoresizing,
 };
 
 use crate::platform::dispatcher::LoopWaker;
@@ -55,7 +68,8 @@ pub(crate) enum ViewEvent {
         key: keys::HardwareKey,
     },
     SafeArea(UIEdgeInsets),
-    /// How far the keyboard overlaps the bottom of the view.
+    /// How far the keyboard overlaps the bottom of the view, sampled every
+    /// frame while the keyboard animates.
     KeyboardBottom(f64),
     Appearance {
         dark: bool,
@@ -74,6 +88,36 @@ thread_local! {
     static BRIDGE: RefCell<Bridge> = RefCell::default();
     static VIEW: RefCell<Option<Retained<InputView>>> = const { RefCell::new(None) };
     static DARK: Cell<bool> = const { Cell::new(false) };
+    static KEYBOARD: RefCell<Option<KeyboardTracker>> = const { RefCell::new(None) };
+}
+
+/// Follows the keyboard's show, hide and resize animations.
+struct KeyboardTracker {
+    /// Zero-width subview of the input view whose height UIKit animates
+    /// alongside the keyboard.
+    shadow: Retained<UIView>,
+    /// Runs only while `shadow` animates.
+    link: Option<Retained<CADisplayLink>>,
+    /// The overlap the current animation ends at.
+    target: f64,
+    /// The overlap last reported to GPUI.
+    reported: f64,
+}
+
+impl KeyboardTracker {
+    fn report(&mut self, overlap: f64) {
+        if (overlap - self.reported).abs() > f64::EPSILON {
+            self.reported = overlap;
+            push(ViewEvent::KeyboardBottom(overlap));
+        }
+    }
+
+    fn stop(&mut self) {
+        if let Some(link) = self.link.take() {
+            // Releases the link's strong reference to the input view.
+            link.invalidate();
+        }
+    }
 }
 
 fn push(event: ViewEvent) {
@@ -166,12 +210,33 @@ define_class!(
 
         #[unsafe(method(gpuiKeyboardWillChangeFrame:))]
         fn keyboard_will_change_frame(&self, notification: &NSNotification) {
-            push(ViewEvent::KeyboardBottom(self.keyboard_overlap(notification)));
+            self.animate_keyboard(self.keyboard_overlap(notification), notification);
         }
 
         #[unsafe(method(gpuiKeyboardWillHide:))]
-        fn keyboard_will_hide(&self, _notification: &NSNotification) {
-            push(ViewEvent::KeyboardBottom(0.));
+        fn keyboard_will_hide(&self, notification: &NSNotification) {
+            self.animate_keyboard(0., notification);
+        }
+
+        /// `CADisplayLink` callback while the keyboard animates.
+        #[unsafe(method(gpuiKeyboardTick:))]
+        fn keyboard_tick(&self, _link: &CADisplayLink) {
+            KEYBOARD.with(|keyboard| {
+                if let Some(keyboard) = &mut *keyboard.borrow_mut() {
+                    let layer = keyboard.shadow.layer();
+                    let running = layer.animationKeys().is_some_and(|keys| keys.count() > 0);
+                    if running {
+                        // SAFETY: a plain property read on the main thread.
+                        let presented = unsafe { layer.presentationLayer() };
+                        let height = presented.map_or(keyboard.target, |p| p.bounds().size.height);
+                        keyboard.report(height);
+                    } else {
+                        keyboard.stop();
+                        let target = keyboard.target;
+                        keyboard.report(target);
+                    }
+                }
+            });
         }
 
         #[unsafe(method(gpuiWillResignActive:))]
@@ -304,9 +369,97 @@ impl InputView {
         overlap.clamp(0., bounds.size.height)
     }
 
+    /// Moves the reported keyboard overlap to `end`, following the keyboard's
+    /// own animation when the notification carries one.
+    fn animate_keyboard(&self, end: f64, notification: &NSNotification) {
+        let mtm = self.mtm();
+        let (duration, curve) = keyboard_animation(notification);
+        KEYBOARD.with(|keyboard| {
+            let mut keyboard = keyboard.borrow_mut();
+            let keyboard = keyboard.get_or_insert_with(|| {
+                let shadow = UIView::initWithFrame(UIView::alloc(mtm), CGRect::ZERO);
+                shadow.setUserInteractionEnabled(false);
+                self.addSubview(&shadow);
+                KeyboardTracker {
+                    shadow,
+                    link: None,
+                    target: 0.,
+                    reported: 0.,
+                }
+            });
+            // Hiding posts both a frame change and a hide notification.
+            if keyboard.link.is_some() && (keyboard.target - end).abs() <= f64::EPSILON {
+                return;
+            }
+            keyboard.target = end;
+            let frame = CGRect::new(CGPoint::ZERO, CGSize::new(0., end));
+            if duration <= 0. {
+                keyboard.stop();
+                keyboard.shadow.layer().removeAllAnimations();
+                keyboard.shadow.setFrame(frame);
+                keyboard.report(end);
+                return;
+            }
+            // UIKit's keyboard curve (7) is private, but UIView animations
+            // accept any curve value shifted into the options' curve bits.
+            let options = UIViewAnimationOptions((curve as usize) << 16)
+                | UIViewAnimationOptions::BeginFromCurrentState;
+            let shadow = keyboard.shadow.clone();
+            let animations = block2::RcBlock::new(move || shadow.setFrame(frame));
+            UIView::animateWithDuration_delay_options_animations_completion(
+                duration,
+                0.,
+                options,
+                &animations,
+                None,
+                mtm,
+            );
+            if keyboard.link.is_none() {
+                keyboard.link = Some(self.display_link());
+            }
+        });
+    }
+
+    /// A display link calling `gpuiKeyboardTick:` every frame, at up to the
+    /// display's maximum rate.
+    fn display_link(&self) -> Retained<CADisplayLink> {
+        // SAFETY: `gpuiKeyboardTick:` is defined above and takes the link.
+        let link =
+            unsafe { CADisplayLink::displayLinkWithTarget_selector(self, sel!(gpuiKeyboardTick:)) };
+        // iOS 15+. ProMotion devices also need
+        // `CADisableMinimumFrameDurationOnPhone` in the app's Info.plist.
+        if link.respondsToSelector(sel!(setPreferredFrameRateRange:)) {
+            link.setPreferredFrameRateRange(CAFrameRateRange {
+                minimum: 60.,
+                maximum: 120.,
+                preferred: 120.,
+            });
+        }
+        // SAFETY: the main run loop, on the main thread.
+        unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
+        link
+    }
+
     fn observe(&self, selector: Sel, name: &NSNotificationName) {
         let center = NSNotificationCenter::defaultCenter();
         unsafe { center.addObserver_selector_name_object(self, selector, Some(name), None) };
+    }
+}
+
+/// The keyboard animation's duration in seconds and its `UIViewAnimationCurve`.
+fn keyboard_animation(notification: &NSNotification) -> (f64, isize) {
+    let Some(info) = notification.userInfo() else {
+        return (0., 0);
+    };
+    // SAFETY: both keys hold `NSNumber`s.
+    unsafe {
+        let duration = info
+            .objectForKey(UIKeyboardAnimationDurationUserInfoKey)
+            .map_or(0., |value| msg_send![&*value, doubleValue]);
+        let curve = info
+            .objectForKey(UIKeyboardAnimationCurveUserInfoKey)
+            .map_or(0, |value| msg_send![&*value, integerValue]);
+        (duration, curve)
     }
 }
 
@@ -379,6 +532,9 @@ pub(crate) unsafe fn install(view: *mut std::ffi::c_void) {
 
 /// Removes the input view (the attached window was destroyed).
 pub(crate) fn uninstall() {
+    if let Some(mut keyboard) = KEYBOARD.with(|keyboard| keyboard.borrow_mut().take()) {
+        keyboard.stop();
+    }
     if let Some(input) = VIEW.with(|slot| slot.borrow_mut().take()) {
         unsafe { NSNotificationCenter::defaultCenter().removeObserver(&input) };
         input.resignFirstResponder();

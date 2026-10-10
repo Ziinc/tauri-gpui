@@ -6,6 +6,9 @@
 //! input), safe-area insets (the padded header) and dark mode. Every
 //! interaction is logged to stderr under the `ios-demo` target so the CI
 //! smoke test can assert on the simulator's console.
+//!
+//! Launched with `--focus-input`, it focuses the input on its first frame,
+//! which shows the software keyboard without a tap.
 
 use gpui_kit::{
     component::{
@@ -34,6 +37,8 @@ struct Demo {
     scroll: ScrollHandle,
     last_logged_offset: f32,
     last_logged_top: Option<Pixels>,
+    last_logged_bottom: Option<Pixels>,
+    focus_input: bool,
     last_appearance: Option<WindowAppearance>,
 }
 
@@ -67,6 +72,8 @@ impl Demo {
             scroll: ScrollHandle::new(),
             last_logged_offset: 0.,
             last_logged_top: None,
+            last_logged_bottom: None,
+            focus_input: std::env::args().any(|arg| arg == "--focus-input"),
             last_appearance: None,
         }
     }
@@ -74,6 +81,10 @@ impl Demo {
 
 impl Render for Demo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.focus_input) {
+            log::info!(target: "ios-demo", "focusing input");
+            self.input.update(cx, |input, cx| input.focus(window, cx));
+        }
         let offset = -f32::from(self.scroll.offset().y);
         if (offset - self.last_logged_offset).abs() >= 200. {
             self.last_logged_offset = offset;
@@ -106,6 +117,12 @@ impl Render for Demo {
                 f32::from(input_y),
                 f32::from(viewport.width)
             );
+        }
+        // Logged on every change, so the smoke test sees the keyboard inset
+        // animate rather than jump.
+        if self.last_logged_bottom != Some(bottom) {
+            self.last_logged_bottom = Some(bottom);
+            log::info!(target: "ios-demo", "layout bottom={:.1}", f32::from(bottom));
         }
         let theme = cx.theme();
         div()
