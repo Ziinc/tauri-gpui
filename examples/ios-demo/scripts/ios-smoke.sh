@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Installs examples/ios-demo on an iPhone simulator and checks, from the app's
+# console, that GPUI attaches and renders, honours the safe area, follows dark
+# mode, and survives a trip to the background. Screenshots go to the output
+# directory.
+#
+#   scripts/ios-smoke.sh <path/to/app> [output-dir]
+set -euo pipefail
+
+app=${1:?usage: ios-smoke.sh <path/to/app> [output-dir]}
+out=${2:-target/ios-smoke}
+bundle=dev.taurigpui.iosdemo
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+log="$out/console.log"
+: >"$log"
+
+fail() {
+  echo "ios-smoke: $*" >&2
+  echo "--- console ---" >&2
+  cat "$log" >&2
+  exit 1
+}
+
+# Waits for an extended regex in the app's console.
+wait_for() {
+  local pattern=$1 timeout=${2:-60}
+  for ((i = 0; i < timeout; i++)); do
+    grep -qE "$pattern" "$log" && return 0
+    sleep 1
+  done
+  fail "timed out waiting for /$pattern/"
+}
+
+# Any iPhone simulator; current models all have a notch or Dynamic Island.
+device=$(xcrun simctl list devices available -j |
+  jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[]
+          | select(.name | startswith("iPhone"))][0].udid // empty')
+[ -n "$device" ] || fail "no iPhone simulator is available"
+echo "ios-smoke: using simulator $device"
+xcrun simctl boot "$device" 2>/dev/null || true
+xcrun simctl bootstatus "$device" -b >/dev/null
+xcrun simctl ui "$device" appearance light
+
+xcrun simctl install "$device" "$app"
+xcrun simctl launch --terminate-running-process \
+  --stdout="$out/stdout.log" --stderr="$log" "$device" "$bundle"
+
+wait_for 'ios-demo: attached'
+wait_for 'ios-demo: layout top='
+wait_for 'appearance dark=false'
+
+# The header is padded by the safe area; a zero top inset means the insets
+# never reached GPUI.
+top=$(grep -oE 'layout top=[0-9.]+' "$log" | tail -1 | cut -d= -f2)
+awk -v top="$top" 'BEGIN { exit !(top > 0) }' || fail "expected a top safe-area inset, got $top"
+sleep 2
+xcrun simctl io "$device" screenshot "$out/light.png" >/dev/null
+
+xcrun simctl ui "$device" appearance dark
+wait_for 'appearance dark=true' 30
+sleep 2
+xcrun simctl io "$device" screenshot "$out/dark.png" >/dev/null
+
+# To the background (Settings comes to the front) and back.
+xcrun simctl launch "$device" com.apple.Preferences >/dev/null
+wait_for 'visibility visible=false' 30
+xcrun simctl launch "$device" "$bundle" >/dev/null
+wait_for 'visibility visible=true' 30
+sleep 2
+xcrun simctl io "$device" screenshot "$out/resumed.png" >/dev/null
+
+if grep -qE 'panicked|tauri-plugin-gpui: .*failed' "$log"; then
+  fail "errors in the console"
+fi
+xcrun simctl terminate "$device" "$bundle" || true
+echo "ios-smoke: passed"

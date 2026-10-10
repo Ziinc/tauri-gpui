@@ -2,3 +2,4 @@
 /examples/gpui-demo/target
 /examples/android-demo/target
 /examples/*/gen/schemas
+/examples/ios-demo/target

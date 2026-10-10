@@ -3,6 +3,8 @@
 
 #[cfg(gpui_android)]
 mod android;
+#[cfg(gpui_ios)]
+mod ios;
 
 use std::{
     cell::{Cell, RefCell},
@@ -80,6 +82,8 @@ pub(crate) struct Runtime {
     proxy_installed: Cell<bool>,
     #[cfg(gpui_android)]
     android: android::AndroidState,
+    #[cfg(gpui_ios)]
+    ios: ios::IosState,
 }
 
 thread_local! {
@@ -155,9 +159,11 @@ pub(crate) fn initialize(app: AppHandle<Wry>, config: GpuiConfig) -> Result<(), 
         proxy_installed: Cell::new(false),
         #[cfg(gpui_android)]
         android: android::AndroidState::default(),
+        #[cfg(gpui_ios)]
+        ios: ios::IosState::default(),
     }));
-    #[cfg(gpui_android)]
-    crate::android::set_waker(runtime.waker.clone());
+    #[cfg(gpui_mobile)]
+    crate::mobile::set_waker(runtime.waker.clone());
     if let Some(on_launch) = config.on_launch {
         runtime.update(on_launch)?;
     }
@@ -170,23 +176,26 @@ fn is_dummy(window_id: &TaoWindowId) -> bool {
     *window_id == unsafe { TaoWindowId::dummy() }
 }
 
-#[cfg(not(gpui_android))]
+#[cfg(not(gpui_mobile))]
 fn new_text_system(fallback: &str) -> Arc<CosmicTextSystem> {
     Arc::new(CosmicTextSystem::new(fallback))
 }
 
-#[cfg(gpui_android)]
+#[cfg(gpui_mobile)]
 fn new_text_system(fallback: &str) -> Arc<CosmicTextSystem> {
-    // fontdb has no Android system font discovery.
+    // fontdb has no Android or iOS system font discovery.
     let text_system = Arc::new(CosmicTextSystem::new_without_system_fonts(fallback));
+    #[cfg(gpui_android)]
     android::load_system_fonts(&*text_system);
+    #[cfg(gpui_ios)]
+    ios::load_system_fonts(&*text_system);
     text_system
 }
 
 fn default_font() -> &'static str {
     if cfg!(target_os = "android") {
         "Roboto"
-    } else if cfg!(target_os = "macos") {
+    } else if cfg!(any(target_os = "macos", target_os = "ios")) {
         "Helvetica Neue"
     } else if cfg!(target_os = "windows") {
         "Segoe UI"
@@ -241,7 +250,11 @@ impl Runtime {
         {
             self.attach_android(window, options, open)
         }
-        #[cfg(not(gpui_android))]
+        #[cfg(gpui_ios)]
+        {
+            self.attach_ios(window, options, open)
+        }
+        #[cfg(not(gpui_mobile))]
         {
             let params = Self::desktop_surface(window)?;
             self.attach_surface(window, options, open, params)
@@ -251,15 +264,25 @@ impl Runtime {
     #[cfg(not(gpui_android))]
     fn desktop_surface(window: &tauri::Window<Wry>) -> Result<SurfaceParams, GpuiError> {
         let scale_factor = window.scale_factor()? as f32;
-        let physical = window.inner_size()?;
+        // On iOS the view fills the whole window, while `inner_size` is only
+        // its safe area; the safe area is reported as insets instead.
+        let physical = if cfg!(gpui_ios) {
+            window.outer_size()?
+        } else {
+            window.inner_size()?
+        };
         let physical_size = events::physical_size(physical.width.max(1), physical.height.max(1));
-        let origin = window
-            .outer_position()
-            .map(|p| {
-                let p = p.to_logical::<f32>(scale_factor as f64);
-                point(px(p.x), px(p.y))
-            })
-            .unwrap_or_default();
+        let origin = if cfg!(gpui_ios) {
+            point(px(0.), px(0.))
+        } else {
+            window
+                .outer_position()
+                .map(|p| {
+                    let p = p.to_logical::<f32>(scale_factor as f64);
+                    point(px(p.x), px(p.y))
+                })
+                .unwrap_or_default()
+        };
         let appearance = window
             .theme()
             .map(|theme| match theme {
@@ -397,6 +420,8 @@ impl Runtime {
         let error = match result {
             Ok(Ok(handle)) => {
                 inner.gpui_handle.set(Some(handle));
+                #[cfg(gpui_ios)]
+                inner.set_insets(self.ios_insets());
                 inner.force_present.set(true);
                 inner.schedule_frame();
                 return Ok(());
@@ -496,6 +521,10 @@ impl Runtime {
                 let Some(inner) = self.surface_for(*window_id, context) else {
                     return false;
                 };
+                #[cfg(gpui_ios)]
+                if self.ios_window_event(&inner, event) {
+                    return false;
+                }
                 self.track_window_state(&inner, event);
                 let destroyed = {
                     let _guard = self.enter();
@@ -577,6 +606,8 @@ impl Runtime {
 
         #[cfg(gpui_android)]
         self.pump_android();
+        #[cfg(gpui_ios)]
+        self.pump_ios();
 
         let start = Instant::now();
         {
@@ -602,8 +633,13 @@ impl Runtime {
             action();
         }
 
+        // iOS terminates apps that use the GPU in the background.
+        #[cfg(gpui_ios)]
+        let frames_allowed = !self.ios.background.get();
+        #[cfg(not(gpui_ios))]
+        let frames_allowed = true;
         let surfaces: Vec<_> = self.surfaces.borrow().values().cloned().collect();
-        {
+        if frames_allowed {
             let _guard = self.enter();
             for surface in &surfaces {
                 if surface.frame_pending.take() && !surface.closed.get() {
@@ -618,7 +654,7 @@ impl Runtime {
         let more_work = self.dispatcher.has_main_work()
             || !self.mounts.borrow().is_empty()
             || !self.deferred.borrow().is_empty()
-            || surfaces.iter().any(|s| s.frame_pending.get());
+            || (frames_allowed && surfaces.iter().any(|s| s.frame_pending.get()));
         if more_work {
             self.waker.wake();
         }
@@ -626,6 +662,8 @@ impl Runtime {
 
     /// Releases every surface while thread locals are still alive.
     fn shutdown(&self) {
+        #[cfg(gpui_ios)]
+        crate::ios::uninstall();
         let surfaces: Vec<_> = self.surfaces.borrow_mut().drain().map(|(_, s)| s).collect();
         self.tao_labels.borrow_mut().clear();
         let _guard = self.enter();
