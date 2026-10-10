@@ -13,8 +13,13 @@ mkdir -p "$OUT"
 # Bound every adb call so a wedged device fails the run instead of hanging it.
 ADB_BIN=$(command -v adb)
 adb() { timeout 90 "$ADB_BIN" "$@"; }
+# System ANR dialogs ("Pixel Launcher isn't responding") cover the app and eat
+# `input` events, so close them before interacting.
+dismiss_dialogs() { adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS > /dev/null || true; }
 
 timeout 300 "$ADB_BIN" wait-for-device
+adb shell settings put global hide_error_dialogs 1 || true
+adb shell am broadcast -a android.intent.action.CLOSE_SYSTEM_DIALOGS > /dev/null || true
 adb install -r -g "$APK"
 adb logcat -c
 # Keep a live capture so the logs survive an emulator crash.
@@ -54,6 +59,7 @@ input_y=$(to_px "$(field input_y)")
 echo "density=$density button=($x,$button_y) input=($x,$input_y)"
 
 # Taps.
+dismiss_dialogs
 adb shell input tap "$x" "$button_y"
 wait_for "tapped count=1" 20 || true
 adb shell input tap "$x" "$button_y"
@@ -61,6 +67,7 @@ wait_for "tapped count=2" 20 || true
 shot 02-tapped
 
 # Drag scrolling and fling.
+dismiss_dialogs
 screen_h=$(adb shell wm size | awk -F'x' '/Physical/ {print $2}' | tr -d '\r')
 adb shell input swipe "$x" $((screen_h * 85 / 100)) "$x" $((screen_h * 45 / 100)) 300
 wait_for "scrolled offset=" 20 || true
@@ -69,6 +76,7 @@ sleep 2
 shot 03-scrolled
 
 # Soft keyboard and text input.
+dismiss_dialogs
 adb shell input tap "$x" "$input_y"
 sleep 2
 shot 04-keyboard
@@ -88,6 +96,7 @@ if ! adb shell pidof "$PKG" > /dev/null; then
   echo "FAIL: app is not running after returning to the foreground"
   failures=$((failures + 1))
 fi
+dismiss_dialogs
 adb shell input tap "$x" "$button_y"
 wait_for "tapped count=3" 20 || true
 

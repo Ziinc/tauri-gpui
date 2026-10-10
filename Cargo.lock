@@ -177,6 +177,7 @@ dependencies = [
  "android_logger",
  "gpui-kit",
  "log",
+ "rust-embed",
  "tauri",
  "tauri-build",
  "tauri-plugin-gpui",

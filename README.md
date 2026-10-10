@@ -140,6 +140,8 @@ Tauri's Android activity has no native surface, so the plugin ships a small Andr
 
 One GPUI window per app is supported on Android.
 
+Debug builds must embed GPUI assets, because the device cannot read the build machine's files. When using gpui-kit, enable the `debug-embed` feature of `rust-embed`.
+
 ## Example and screenshot testing
 
 Run the demo with `cargo run -p gpui-demo`.
