@@ -6,6 +6,9 @@
 //! input), safe-area insets (the padded header) and dark mode. Every
 //! interaction is logged to stderr under the `ios-demo` target so the CI
 //! smoke test can assert on the simulator's console.
+//!
+//! Launched with `--focus-input`, it focuses the input a second after launch
+//! (once the app is active), which shows the software keyboard without a tap.
 
 use gpui_kit::{
     component::{
@@ -34,6 +37,7 @@ struct Demo {
     scroll: ScrollHandle,
     last_logged_offset: f32,
     last_logged_top: Option<Pixels>,
+    last_logged_bottom: Option<Pixels>,
     last_appearance: Option<WindowAppearance>,
 }
 
@@ -60,6 +64,21 @@ impl Demo {
             log::info!(target: "ios-demo", "visibility visible={visible}");
         })
         .detach();
+        if std::env::args().any(|arg| arg == "--focus-input") {
+            // UIKit only shows the keyboard for a first responder in an
+            // active, on-screen window, which the first frame precedes.
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                this.update_in(cx, |this, window, cx| {
+                    log::info!(target: "ios-demo", "focusing input");
+                    this.input.update(cx, |input, cx| input.focus(window, cx));
+                })
+                .ok();
+            })
+            .detach();
+        }
         Self {
             taps: 0,
             input,
@@ -67,6 +86,7 @@ impl Demo {
             scroll: ScrollHandle::new(),
             last_logged_offset: 0.,
             last_logged_top: None,
+            last_logged_bottom: None,
             last_appearance: None,
         }
     }
@@ -106,6 +126,12 @@ impl Render for Demo {
                 f32::from(input_y),
                 f32::from(viewport.width)
             );
+        }
+        // Logged on every change, so the smoke test sees the keyboard inset
+        // animate rather than jump.
+        if self.last_logged_bottom != Some(bottom) {
+            self.last_logged_bottom = Some(bottom);
+            log::info!(target: "ios-demo", "layout bottom={:.1}", f32::from(bottom));
         }
         let theme = cx.theme();
         div()
@@ -204,7 +230,7 @@ impl DemoLogger {
 
 impl log::Log for DemoLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Info
+        metadata.level() <= log::Level::Info || metadata.target().starts_with("tauri_plugin_gpui")
     }
 
     fn log(&self, record: &log::Record) {
@@ -229,7 +255,7 @@ fn init_logging() {
     let path = std::env::temp_dir().join("ios-demo.log");
     *LOGGER.file.lock().unwrap_or_else(|e| e.into_inner()) = std::fs::File::create(path).ok();
     if log::set_logger(&LOGGER).is_ok() {
-        log::set_max_level(log::LevelFilter::Info);
+        log::set_max_level(log::LevelFilter::Debug);
     }
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
