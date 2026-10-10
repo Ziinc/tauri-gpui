@@ -208,6 +208,7 @@ impl Runtime {
                 });
             }
             ViewEvent::Appearance { dark } => {
+                log::info!("tauri-plugin-gpui: appearance dark={dark}");
                 if let Some(inner) = inner {
                     inner.state.borrow_mut().appearance = if dark {
                         WindowAppearance::Dark
