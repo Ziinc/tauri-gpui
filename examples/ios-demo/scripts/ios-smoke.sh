@@ -115,9 +115,12 @@ wait_for 'ios-demo: focusing input'
 wait_for 'layout bottom=[0-9]{3}' 30
 sleep 2
 sync_log
+# The baseline is the last inset before focusing: the first frame drawn after
+# it can already be partway through the animation.
+before=$(sed -n '/ios-demo: focusing input/q;p' "$log" | grep -oE 'layout bottom=[0-9.]+' | tail -1 | cut -d= -f2)
 bottoms=$(sed -n '/ios-demo: focusing input/,$p' "$log" | grep -oE 'layout bottom=[0-9.]+' | cut -d= -f2)
-echo "ios-smoke: bottom insets:" $bottoms
-echo "$bottoms" | awk '
+echo "ios-smoke: bottom insets: (${before:-0})" $bottoms
+printf '%s\n%s\n' "${before:-0}" "$bottoms" | awk '
   NR == 1 { first = $1 }
   { values[NR] = $1; last = $1 }
   END {
