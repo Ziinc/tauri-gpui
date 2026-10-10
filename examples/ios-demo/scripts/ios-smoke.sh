@@ -12,20 +12,52 @@ out=${2:-target/ios-smoke}
 bundle=dev.taurigpui.iosdemo
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-log="$out/console.log"
+# The demo logs to stderr and to tmp/ios-demo.log in its data container;
+# `sync_log` copies the latter here.
+log="$out/app.log"
 : >"$log"
+device=
+app_log=
+
+sync_log() {
+  if [ -z "$app_log" ] && [ -n "$device" ]; then
+    local data
+    data=$(xcrun simctl get_app_container "$device" "$bundle" data 2>/dev/null) || return 0
+    app_log="$data/tmp/ios-demo.log"
+  fi
+  if [ -n "$app_log" ] && [ -f "$app_log" ]; then
+    cp "$app_log" "$log"
+  fi
+}
 
 fail() {
   echo "ios-smoke: $*" >&2
-  echo "--- console ---" >&2
+  sync_log
+  echo "--- app log ---" >&2
   cat "$log" >&2
+  echo "--- stderr ---" >&2
+  cat "$out/stderr.log" >&2 || true
+  if [ -n "$device" ]; then
+    xcrun simctl io "$device" screenshot "$out/failure.png" >/dev/null 2>&1 || true
+    xcrun simctl spawn "$device" log show --last 10m --style compact \
+      --predicate 'process CONTAINS "gpui-ios-demo"' >"$out/system.log" 2>&1 || true
+    echo "--- system log (tail) ---" >&2
+    tail -n 80 "$out/system.log" >&2 || true
+  fi
+  cp ~/Library/Logs/DiagnosticReports/*gpui-ios-demo* "$out/" 2>/dev/null || true
+  for report in "$out"/*.ips; do
+    [ -f "$report" ] || continue
+    echo "--- crash report $report (head) ---" >&2
+    head -n 120 "$report" >&2
+  done
   exit 1
 }
 
-# Waits for an extended regex in the app's console.
+# Waits for an extended regex in the app's log.
 wait_for() {
   local pattern=$1 timeout=${2:-60}
   for ((i = 0; i < timeout; i++)); do
+    sync_log
     grep -qE "$pattern" "$log" && return 0
     sleep 1
   done
@@ -44,8 +76,9 @@ xcrun simctl ui "$device" appearance light
 
 xcrun simctl install "$device" "$app"
 xcrun simctl launch --terminate-running-process \
-  --stdout="$out/stdout.log" --stderr="$log" "$device" "$bundle"
+  --stdout="$out/stdout.log" --stderr="$out/stderr.log" "$device" "$bundle"
 
+wait_for 'ios-demo: starting'
 wait_for 'ios-demo: attached'
 wait_for 'ios-demo: layout top='
 wait_for 'appearance dark=false'
@@ -70,7 +103,8 @@ wait_for 'visibility visible=true' 30
 sleep 2
 xcrun simctl io "$device" screenshot "$out/resumed.png" >/dev/null
 
-if grep -qE 'panicked|tauri-plugin-gpui: .*failed' "$log"; then
+sync_log
+if grep -qE 'PANIC|tauri-plugin-gpui: .*failed' "$log"; then
   fail "errors in the console"
 fi
 xcrun simctl terminate "$device" "$bundle" || true

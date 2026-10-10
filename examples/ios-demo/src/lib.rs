@@ -186,30 +186,62 @@ impl Render for Demo {
     }
 }
 
-/// Logs to stderr, which Xcode and `simctl launch --stderr` capture.
-struct StderrLogger;
+/// Logs to stderr (Xcode's console) and to `ios-demo.log` in the app's
+/// temporary directory, which the smoke test reads from the simulator.
+struct DemoLogger {
+    file: std::sync::Mutex<Option<std::fs::File>>,
+}
 
-impl log::Log for StderrLogger {
+impl DemoLogger {
+    fn write(&self, line: &str) {
+        eprintln!("{line}");
+        if let Some(file) = &mut *self.file.lock().unwrap_or_else(|e| e.into_inner()) {
+            use std::io::Write;
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+impl log::Log for DemoLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
         metadata.level() <= log::Level::Info
     }
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            eprintln!("{} {}: {}", record.level(), record.target(), record.args());
+            self.write(&format!(
+                "{} {}: {}",
+                record.level(),
+                record.target(),
+                record.args()
+            ));
         }
     }
 
     fn flush(&self) {}
 }
 
-static LOGGER: StderrLogger = StderrLogger;
+static LOGGER: DemoLogger = DemoLogger {
+    file: std::sync::Mutex::new(None),
+};
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+fn init_logging() {
+    let path = std::env::temp_dir().join("ios-demo.log");
+    *LOGGER.file.lock().unwrap_or_else(|e| e.into_inner()) = std::fs::File::create(path).ok();
     if log::set_logger(&LOGGER).is_ok() {
         log::set_max_level(log::LevelFilter::Info);
     }
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        LOGGER.write(&format!("PANIC {info}"));
+        default_hook(info);
+    }));
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    init_logging();
+    log::info!(target: "ios-demo", "starting");
     tauri::Builder::default()
         .setup(|app| {
             tauri_plugin_gpui::init_with(app, GpuiConfig::new().on_launch(gpui_kit::init))?;
