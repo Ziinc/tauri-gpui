@@ -17,6 +17,7 @@ use std::{
     time::Duration,
 };
 
+use gpui::{Pixels, Point, point, px};
 use jni::{
     JNIEnv, JavaVM, NativeMethod,
     objects::{GlobalRef, JClass, JObject, JString, JValue},
@@ -82,6 +83,13 @@ pub(crate) enum ViewEvent {
     EditAction(keys::EditAction),
     /// Text from Android Autofill for the focused input.
     Autofill(String),
+    /// A native selection handle dragged. `position` (logical pixels) is where
+    /// the handle wants the caret, already aimed at the text line.
+    HandleDrag {
+        handle: selection::Handle,
+        phase: selection::DragPhase,
+        position: Point<Pixels>,
+    },
 }
 
 /// Signalled once the renderer no longer references a destroyed surface.
@@ -269,6 +277,34 @@ pub(crate) fn hide_selection_toolbar() {
     });
 }
 
+/// Shows (or moves) the native selection handles. `collapsed` shows only the
+/// insertion handle, at the start anchor.
+pub(crate) fn show_selection_handles(anchors: selection::HandleAnchors, collapsed: bool) {
+    with_view("showSelectionHandles", |env, view| {
+        env.call_method(
+            view,
+            "showSelectionHandles",
+            "(FFFFFZ)V",
+            &[
+                JValue::Float(anchors.start_x),
+                JValue::Float(anchors.start_y),
+                JValue::Float(anchors.end_x),
+                JValue::Float(anchors.end_y),
+                JValue::Float(anchors.line_height),
+                JValue::Bool(collapsed.into()),
+            ],
+        )
+        .map(drop)
+    });
+}
+
+pub(crate) fn hide_selection_handles() {
+    with_view("hideSelectionHandles", |env, view| {
+        env.call_method(view, "hideSelectionHandles", "()V", &[])
+            .map(drop)
+    });
+}
+
 /// Tells the view about the focused input (for Autofill): its text and the
 /// rectangle it occupies.
 pub(crate) fn set_autofill_input(text: &str, rect: selection::ViewRect) {
@@ -373,6 +409,11 @@ pub(crate) fn register_natives(env: &mut JNIEnv, activity: &JObject) -> jni::err
                 "nativeAutofill",
                 "(Ljava/lang/String;)V",
                 native_autofill as *mut c_void,
+            ),
+            method(
+                "nativeHandleDrag",
+                "(IIFF)V",
+                native_handle_drag as *mut c_void,
             ),
         ],
     )
@@ -517,4 +558,26 @@ extern "system" fn native_autofill(mut env: JNIEnv, _: JClass, text: JString) {
     if let Some(text) = string(&mut env, &text) {
         push(ViewEvent::Autofill(text));
     }
+}
+
+extern "system" fn native_handle_drag(
+    _: JNIEnv,
+    _: JClass,
+    handle: jint,
+    phase: jint,
+    x: jfloat,
+    y: jfloat,
+) {
+    let (Some(handle), Some(phase)) = (
+        selection::Handle::from_code(handle),
+        selection::DragPhase::from_code(phase),
+    ) else {
+        return;
+    };
+    let scale = density().max(0.1);
+    push(ViewEvent::HandleDrag {
+        handle,
+        phase,
+        position: point(px(x / scale), px(y / scale)),
+    });
 }

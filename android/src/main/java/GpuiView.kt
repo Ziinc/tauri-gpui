@@ -42,8 +42,9 @@ import app.tauri.plugin.PluginManager
  *
  * GPUI draws its text inputs itself, so the view stands in for them towards
  * Android: a floating selection toolbar (Cut, Copy, Paste, Select all,
- * Autofill) and one virtual Autofill field for the focused input. Rust drives
- * both through [showSelectionToolbar], [setAutofillInput] and friends.
+ * Autofill), the drag handles of a selection and one virtual Autofill field
+ * for the focused input. Rust drives them through [showSelectionToolbar],
+ * [showSelectionHandles], [setAutofillInput] and friends.
  */
 class GpuiView(private val activity: Activity) : SurfaceView(activity), SurfaceHolder.Callback {
     @Volatile
@@ -59,6 +60,7 @@ class GpuiView(private val activity: Activity) : SurfaceView(activity), SurfaceH
     private var toolbarHasSelection = false
     private val toolbarRect = Rect()
     private var autofillInput: AutofillInput? = null
+    private val handles = SelectionHandles(this) { closeToolbar() }
 
     private class AutofillInput(val text: String, val rect: Rect)
 
@@ -199,6 +201,29 @@ class GpuiView(private val activity: Activity) : SurfaceView(activity), SurfaceH
         toolbar?.finish()
     }
 
+    // Selection handles.
+
+    /**
+     * Shows the drag handles (view pixels): the left and right handles at the
+     * bottoms of the selection's two carets, or only the insertion handle at
+     * (startX, startY) when [collapsed]. [lineHeight] lets a drag aim at the
+     * text line above the handle it holds.
+     */
+    fun showSelectionHandles(
+        startX: Float,
+        startY: Float,
+        endX: Float,
+        endY: Float,
+        lineHeight: Float,
+        collapsed: Boolean,
+    ) {
+        post { handles.show(startX, startY, endX, endY, lineHeight, collapsed) }
+    }
+
+    fun hideSelectionHandles() {
+        post { handles.hide() }
+    }
+
     private fun clipboardHasText(): Boolean =
         clipboard.primaryClipDescription?.hasMimeType("text/*") == true
 
@@ -316,12 +341,22 @@ class GpuiView(private val activity: Activity) : SurfaceView(activity), SurfaceH
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
-        if (!gainFocus) closeToolbar()
+        if (!gainFocus) {
+            closeToolbar()
+            handles.hide()
+        }
     }
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
         if (!hasWindowFocus) closeToolbar()
+        // They come back with the window, unless the view lost focus meanwhile.
+        handles.suspend(!hasWindowFocus)
+    }
+
+    override fun onDetachedFromWindow() {
+        handles.hide()
+        super.onDetachedFromWindow()
     }
 
     // Surface.
@@ -502,5 +537,6 @@ class GpuiView(private val activity: Activity) : SurfaceView(activity), SurfaceH
         @JvmStatic external fun nativeLongPress(x: Float, y: Float)
         @JvmStatic external fun nativeEditAction(action: Int)
         @JvmStatic external fun nativeAutofill(text: String)
+        @JvmStatic external fun nativeHandleDrag(handle: Int, phase: Int, x: Float, y: Float)
     }
 }
