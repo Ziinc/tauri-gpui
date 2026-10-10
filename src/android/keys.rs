@@ -111,30 +111,6 @@ impl EditAction {
     }
 }
 
-/// Keystroke for one character of IME-committed text.
-pub(crate) fn char_keystroke(c: char) -> Keystroke {
-    match c {
-        '\n' => Keystroke {
-            modifiers: Modifiers::default(),
-            key: "enter".into(),
-            key_char: None,
-        },
-        ' ' => Keystroke {
-            modifiers: Modifiers::default(),
-            key: "space".into(),
-            key_char: Some(" ".into()),
-        },
-        c => Keystroke {
-            modifiers: Modifiers {
-                shift: c.is_uppercase(),
-                ..Modifiers::default()
-            },
-            key: c.to_lowercase().to_string(),
-            key_char: Some(c.to_string()),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,12 +156,5 @@ mod tests {
         assert!(keys.iter().all(|k| k.modifiers == modifiers(META_CTRL_ON)));
         assert!(keys.iter().all(|k| k.key_char.is_none()));
         assert_eq!(EditAction::from_code(4), None);
-    }
-
-    #[test]
-    fn committed_newline_is_enter() {
-        assert_eq!(char_keystroke('\n').key, "enter");
-        let upper = char_keystroke('Q');
-        assert_eq!((upper.key.as_str(), upper.modifiers.shift), ("q", true));
     }
 }

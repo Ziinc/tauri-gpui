@@ -114,7 +114,7 @@ Everything else does one of three things:
 | Linux (Wayland) | Builds. TAO hands out Wayland handles, but the GTK subsurface interaction has not been tested. |
 | macOS, Windows | Implemented against the same cross-platform APIs but **not yet built or run**. On Windows, `tauri-runtime-wry` paints window-only windows with softbuffer, which may conflict with the DX12 swapchain. |
 | Android (`mobile` feature) | Builds for `aarch64`/`x86_64`. CI drives [`examples/android-demo`](examples/android-demo) on an emulator (taps, scrolling, soft keyboard, background and resume). See [Android](#android). |
-| iOS | Not implemented: `init` returns `UnsupportedOperation`. |
+| iOS (`mobile` feature) | Builds for `aarch64-apple-ios` and the simulator. CI runs [`examples/ios-demo`](examples/ios-demo) on an iPhone simulator (rendering, safe area, dark mode, background and resume, keyboard inset animation). Not yet run on a physical device. See [iOS](#ios). |
 
 ## Android
 
@@ -143,6 +143,47 @@ Tauri's Android activity has no native surface, so the plugin ships a small Andr
 One GPUI window per app is supported on Android.
 
 Debug builds must embed GPUI assets, because the device cannot read the build machine's files. When using gpui-kit, enable the `debug-embed` feature of `rust-embed`.
+
+## iOS
+
+Enable the same `mobile` feature; the iOS dependencies are target-gated too. The app code is the same as on desktop and Android: call `init` in `setup`, build a `tauri::WindowBuilder` window (no WebView), attach GPUI to it, and mark the entry point with `#[cfg_attr(mobile, tauri::mobile_entry_point)]`.
+
+Unlike Android, TAO already gives each iOS window a native `UIView`, so no Swift code is needed. GPUI renders into a `CAMetalLayer` that wgpu adds to that view, and TAO's own events drive it. The plugin lays a transparent `GpuiInputView` over TAO's view for what TAO does not cover. That view never receives touches.
+
+| Concern | Implementation |
+|---|---|
+| Threads | UIKit, TAO and GPUI share the main thread. UIKit callbacks are still queued and drained by the event loop, because UIKit calls back synchronously, sometimes from inside a GPUI update. |
+| Surface | The view fills the window; the Metal layer follows its bounds and scale. While the app is in the background no frames are rendered (iOS terminates apps that use the GPU there). |
+| Touch | TAO's touches become GPUI `PlatformInput::Touch`. GPUI's gesture arena turns them into taps, pans and flings (with `UIScrollView` deceleration) and long presses. |
+| Keyboard | Focus on a GPUI text input makes `GpuiInputView` the first responder (`UIKeyInput`), which shows the software keyboard; losing focus hides it. Typed characters arrive as key presses, so key bindings still see them. While a text input has focus, a hardware keyboard also delivers navigation and function keys and command/control shortcuts as keystrokes. Autocorrection, autocapitalization and smart punctuation are off. |
+| Insets | The safe area (notch, Dynamic Island, home indicator) and the keyboard are reported as `WindowInsets`; use `window.fully_visible_bounds()` to keep content clear of them. The keyboard inset moves with the keyboard: UIKit animates a hidden view with the keyboard's own duration and curve, and a `CADisplayLink` reports its height every frame (at up to 120 Hz on ProMotion iPhones when the app's `Info.plist` sets `CADisableMinimumFrameDurationOnPhone`, as `examples/ios-demo/Info.ios.plist` does). |
+| Lifecycle | `UIApplication` notifications map to GPUI's `Inactive`, `Background`, `Foreground` and `Active` phases, and the window turns hidden and visible with them. |
+| Appearance, fonts, clipboard | Dark mode follows the system. Helvetica Neue (the default), SF, Menlo and Apple Color Emoji are loaded from `/System/Library/Fonts`. Plain-text clipboard through `UIPasteboard`. |
+
+[`examples/ios-demo`](examples/ios-demo) is a touch-first gpui-kit app (taps, scrolling, the keyboard, safe area, dark mode). On a Mac with Xcode:
+
+```sh
+cd examples/ios-demo
+npm ci
+npm run tauri -- ios init
+npm run tauri -- ios dev    # pick a simulator or a connected device
+```
+
+`scripts/ios-smoke.sh` is the CI check: it installs a simulator build, then asserts on the app's console while switching dark mode, backgrounding the app, and relaunching it with `--focus-input` to check that the keyboard inset animates.
+
+One GPUI window per app is supported on iOS. There is no system back action, so `on_back`/`set_back_enabled` do nothing.
+
+As on Android, debug builds must embed GPUI assets (`rust-embed`'s `debug-embed` with gpui-kit).
+
+Build the app's library as `staticlib` (plus `rlib` for desktop), without `cdylib`: GPUI's `core-video` dependency asks rustc to link the OpenGL framework, which iOS lacks. The plugin stubs the three CGL symbols that end up referenced, so Xcode's link of the static library succeeds.
+
+`gpui_wgpu` only creates Vulkan and GL instances, so on iOS the plugin creates the shared GPU context on Metal before the first renderer. GPU device-loss recovery still goes through `gpui_wgpu`'s Vulkan/GL instance and will fail on iOS.
+
+`libc` 0.2.190 made the `_dyld_*` functions macOS-only, which breaks `backtrace` (and with it GPUI) on iOS. Until that is fixed upstream, keep `libc` at 0.2.189 in iOS apps:
+
+```sh
+cargo update -p libc --precise 0.2.189
+```
 
 ## Example and screenshot testing
 
@@ -208,5 +249,5 @@ Without a display, `cargo test` skips the suite.
 - IME positioning: it has no Tauri core API and would need a TAO change.
 - Accessibility (AccessKit through Tauri windows).
 - Building and testing on macOS and Windows.
-- iOS.
 - Android: IME composition beyond committed text, multiple GPUI windows, and accessibility.
+- iOS: running on a physical device, IME composition (marked text, e.g. Chinese and Japanese input), multiple GPUI windows, and accessibility.

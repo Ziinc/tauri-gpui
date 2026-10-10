@@ -23,10 +23,10 @@ exclude = ["examples/gpui-demo", "examples/android-demo"]
 
 [features]
 default = []
-# Android support (a SurfaceView-backed GPUI platform layer). Off by default;
-# the Android dependencies are also target-gated, so desktop builds never
-# compile them either way.
-mobile = ["dep:jni", "dep:ndk"]
+# Android and iOS support (GPUI platform layers for a SurfaceView and a UIView).
+# Off by default; the mobile dependencies are also target-gated, so desktop
+# builds never compile them either way.
+mobile = ["dep:jni", "dep:ndk", "dep:objc2", "dep:objc2-core-foundation", "dep:objc2-foundation", "dep:objc2-quartz-core", "dep:objc2-ui-kit", "dep:block2"]
 
 [dependencies]
 anyhow = "1"
@@ -53,6 +53,16 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8", features = ["font-k
 # Same major version Tauri uses, so `run_on_android_context` hands us its JNIEnv.
 jni = { version = "0.21", optional = true }
 ndk = { version = "0.9", default-features = false, optional = true }
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# The same objc2 generation TAO uses for its UIKit backend.
+objc2 = { version = "0.6", optional = true }
+objc2-core-foundation = { version = "0.3", optional = true }
+objc2-foundation = { version = "0.3", optional = true }
+objc2-ui-kit = { version = "0.3", optional = true }
+objc2-quartz-core = { version = "0.3", optional = true }
+block2 = { version = "0.6", optional = true }
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 
 [target.'cfg(target_os = "windows")'.dependencies]

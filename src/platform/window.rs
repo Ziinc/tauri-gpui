@@ -64,7 +64,7 @@ pub(crate) struct Callbacks {
     pub close: Option<Box<dyn FnOnce()>>,
     pub hit_test_window_control: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
     pub appearance_changed: Option<Box<dyn FnMut()>>,
-    #[cfg(gpui_android)]
+    #[cfg(gpui_mobile)]
     pub insets_changed: Option<Box<dyn FnMut(gpui::WindowInsets)>>,
     #[cfg(gpui_android)]
     pub back: Option<Box<dyn FnMut()>>,
@@ -109,7 +109,7 @@ pub(crate) struct WindowState {
     /// commit some TAO backends send through `ReceivedImeText`.
     pub last_key_text: Option<String>,
     /// System bar and soft keyboard regions (mobile only).
-    #[cfg(gpui_android)]
+    #[cfg(gpui_mobile)]
     pub insets: gpui::WindowInsets,
     #[cfg(gpui_android)]
     pub text_input: TextInputSignals,
@@ -208,7 +208,8 @@ impl WindowInner {
     }
 
     /// Runs `f` with GPUI's input handler for the focused text input, if any.
-    #[cfg(gpui_android)]
+    #[cfg(any(gpui_mobile, test))]
+    #[cfg_attr(not(gpui_mobile), allow(dead_code))]
     pub fn with_input_handler(&self, f: impl FnOnce(&mut PlatformInputHandler)) {
         let handler = self.state.borrow_mut().input_handler.take();
         if let Some(mut handler) = handler {
@@ -234,6 +235,36 @@ impl WindowInner {
             state.text_input.dirty = true;
         }
         self.waker.wake();
+    }
+
+    /// Records a visibility change (mobile apps moving to and from the
+    /// background) and tells GPUI.
+    #[cfg(gpui_mobile)]
+    pub fn set_visible(&self, visible: bool) {
+        if std::mem::replace(&mut self.state.borrow_mut().visible, visible) == visible {
+            return;
+        }
+        let callback = self.callbacks.borrow_mut().visibility_change.take();
+        if let Some(mut callback) = callback {
+            callback(if visible {
+                WindowVisibility::Visible
+            } else {
+                WindowVisibility::Hidden
+            });
+            restore(&mut self.callbacks.borrow_mut().visibility_change, callback);
+        }
+    }
+
+    /// Records new system bar and keyboard insets and tells GPUI.
+    #[cfg(gpui_mobile)]
+    pub fn set_insets(&self, insets: gpui::WindowInsets) {
+        self.state.borrow_mut().insets = insets.clone();
+        let callback = self.callbacks.borrow_mut().insets_changed.take();
+        if let Some(mut callback) = callback {
+            callback(insets);
+            restore(&mut self.callbacks.borrow_mut().insets_changed, callback);
+        }
+        self.schedule_frame();
     }
 
     /// Returns the click count for a mouse-down at `position`.
@@ -511,8 +542,8 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn minimize(&self) {
-        // Android windows have no such states.
-        #[cfg(not(gpui_android))]
+        // Mobile windows have no such states.
+        #[cfg(not(gpui_mobile))]
         {
             let window = self.inner.tauri_window.clone();
             (self.inner.defer)(Box::new(move || {
@@ -522,8 +553,8 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn zoom(&self) {
-        // Android windows have no such states.
-        #[cfg(not(gpui_android))]
+        // Mobile windows have no such states.
+        #[cfg(not(gpui_mobile))]
         {
             let window = self.inner.tauri_window.clone();
             (self.inner.defer)(Box::new(move || {
@@ -537,8 +568,8 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn toggle_fullscreen(&self) {
-        // Android windows have no such states.
-        #[cfg(not(gpui_android))]
+        // Mobile windows have no such states.
+        #[cfg(not(gpui_mobile))]
         {
             let window = self.inner.tauri_window.clone();
             (self.inner.defer)(Box::new(move || {
@@ -667,12 +698,12 @@ impl PlatformWindow for TauriGpuiWindow {
         unsupported("update_ime_position");
     }
 
-    #[cfg(gpui_android)]
+    #[cfg(gpui_mobile)]
     fn insets(&self) -> gpui::WindowInsets {
         self.inner.state.borrow().insets.clone()
     }
 
-    #[cfg(gpui_android)]
+    #[cfg(gpui_mobile)]
     fn on_insets_changed(&self, callback: Box<dyn FnMut(gpui::WindowInsets)>) {
         self.inner.callbacks.borrow_mut().insets_changed = Some(callback);
     }
@@ -687,29 +718,34 @@ impl PlatformWindow for TauriGpuiWindow {
         crate::android::set_back_enabled(enabled);
     }
 
-    #[cfg(gpui_android)]
+    #[cfg(gpui_mobile)]
     fn show_soft_keyboard(&self) {
-        crate::android::show_keyboard();
+        crate::mobile::show_keyboard();
     }
 
-    #[cfg(gpui_android)]
+    #[cfg(gpui_mobile)]
     fn hide_soft_keyboard(&self) {
-        crate::android::hide_keyboard();
+        crate::mobile::hide_keyboard();
     }
 
-    #[cfg(gpui_android)]
+    #[cfg(gpui_mobile)]
     fn text_input_state_changed(&self, change: gpui::TextInputStateChange) {
         match change {
             gpui::TextInputStateChange::FocusGained => {
-                crate::android::show_keyboard();
+                crate::mobile::show_keyboard();
+                #[cfg(gpui_android)]
                 self.inner.text_input_changed(Some(true));
             }
             gpui::TextInputStateChange::FocusLost => {
-                crate::android::hide_keyboard();
+                crate::mobile::hide_keyboard();
+                #[cfg(gpui_android)]
                 self.inner.text_input_changed(Some(false));
             }
             gpui::TextInputStateChange::SelectionChanged
-            | gpui::TextInputStateChange::ContentChanged => self.inner.text_input_changed(None),
+            | gpui::TextInputStateChange::ContentChanged => {
+                #[cfg(gpui_android)]
+                self.inner.text_input_changed(None);
+            }
         }
     }
 
@@ -749,7 +785,7 @@ pub(crate) fn default_window_state(
         fullscreen: false,
         maximized: false,
         last_key_text: None,
-        #[cfg(gpui_android)]
+        #[cfg(gpui_mobile)]
         insets: gpui::WindowInsets::default(),
         #[cfg(gpui_android)]
         text_input: TextInputSignals::default(),

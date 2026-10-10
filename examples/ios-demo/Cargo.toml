@@ -1,0 +1,27 @@
+[package]
+name = "ios-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone workspace, like examples/android-demo, so gpui-kit stays out of the plugin's lockfile.
+[workspace]
+
+[lib]
+# `staticlib` is what the Xcode project links; `rlib` keeps `cargo run` working on desktop.
+# No `cdylib`: GPUI's core-video dependency pulls in `cgl`, which asks rustc to
+# link the OpenGL framework, and iOS has none. Xcode links the static library
+# instead; the plugin stubs the few CGL symbols it references.
+name = "ios_demo_lib"
+crate-type = ["staticlib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = ["unstable"] }
+tauri-plugin-gpui = { path = "../..", features = ["mobile"] }
+gpui-kit = "0.7.1"
+log = "0.4"
+# Only here to turn on `debug-embed`, so gpui-kit's icons are compiled into debug builds (a phone cannot read the build machine's files).
+rust-embed = { version = "8.12", features = ["debug-embed"] }

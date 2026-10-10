@@ -1,0 +1,48 @@
+name: iOS
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ios-demo:
+    # Builds examples/ios-demo for the iOS simulator and drives it there.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+          workspaces: |
+            .
+            examples/ios-demo
+      - name: Lint (iOS target)
+        run: |
+          cargo clippy -p tauri-plugin-gpui --features mobile --target aarch64-apple-ios -- -D warnings
+          cargo clippy --manifest-path examples/ios-demo/Cargo.toml --target aarch64-apple-ios -- -D warnings
+      - name: Build the simulator app
+        working-directory: examples/ios-demo
+        # The Xcode project calls back into the CLI, so it must be a local
+        # npm install rather than a global one.
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          npm ci
+          npm run tauri -- ios init --ci
+          npm run tauri -- ios build --debug --target aarch64-sim --no-sign --ci
+          app=$(find gen/apple/build -name '*.app' -path '*arm64-sim*' -maxdepth 3 | head -n 1)
+          test -n "$app"
+          ditto "$app" "$RUNNER_TEMP/ios-demo.app"
+      - name: Smoke test on the simulator
+        timeout-minutes: 20
+        run: examples/ios-demo/scripts/ios-smoke.sh "$RUNNER_TEMP/ios-demo.app" target/ios-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-smoke
+          path: target/ios-smoke

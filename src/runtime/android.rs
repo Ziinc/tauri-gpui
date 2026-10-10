@@ -6,9 +6,8 @@ mod input;
 use std::{cell::RefCell, ffi::c_void, path::Path, rc::Rc};
 
 use gpui::{
-    AppLifecyclePhase, Edges, KeyDownEvent, KeyUpEvent, Keystroke, PlatformInput,
-    PlatformTextSystem, TouchEvent, TouchId, TouchPhase, WindowAppearance, WindowInsets,
-    WindowVisibility, point, px,
+    AppLifecyclePhase, Edges, KeyDownEvent, KeyUpEvent, PlatformInput, PlatformTextSystem,
+    TouchPhase, WindowAppearance, WindowInsets, point, px,
 };
 use gpui_wgpu::WgpuSurfaceConfig;
 use ndk::native_window::NativeWindow;
@@ -21,7 +20,7 @@ use super::{OpenWindow, Runtime, SurfaceParams};
 use crate::{
     GpuiError, GpuiOptions,
     android::{ViewEvent, keys},
-    events::physical_size,
+    events::{mobile, physical_size},
     platform::window::{RawWindow, WindowInner},
 };
 
@@ -212,7 +211,7 @@ impl Runtime {
                     if let Some(renderer) = inner.state.borrow_mut().renderer.as_mut() {
                         renderer.unconfigure_surface();
                     }
-                    set_visible(inner, false);
+                    inner.set_visible(false);
                 }
                 self.android.surface.borrow_mut().take();
                 released.signal();
@@ -264,16 +263,7 @@ impl Runtime {
                 };
                 *self.android.insets.borrow_mut() = insets.clone();
                 if let Some(inner) = &inner {
-                    inner.state.borrow_mut().insets = insets.clone();
-                    let callback = inner.callbacks.borrow_mut().insets_changed.take();
-                    if let Some(mut callback) = callback {
-                        callback(insets);
-                        let mut callbacks = inner.callbacks.borrow_mut();
-                        if callbacks.insets_changed.is_none() {
-                            callbacks.insets_changed = Some(callback);
-                        }
-                    }
-                    inner.schedule_frame();
+                    inner.set_insets(insets);
                 }
             }
             ViewEvent::LongPress { x, y } => {
@@ -330,54 +320,13 @@ impl Runtime {
         match result {
             Ok(()) => {
                 inner.raw.set(raw);
-                set_visible(inner, true);
+                inner.set_visible(true);
             }
             Err(error) => {
                 log::error!("tauri-plugin-gpui: recreating the surface failed: {error:#}")
             }
         }
     }
-}
-
-fn set_visible(inner: &WindowInner, visible: bool) {
-    if std::mem::replace(&mut inner.state.borrow_mut().visible, visible) == visible {
-        return;
-    }
-    let callback = inner.callbacks.borrow_mut().visibility_change.take();
-    if let Some(mut callback) = callback {
-        callback(if visible {
-            WindowVisibility::Visible
-        } else {
-            WindowVisibility::Hidden
-        });
-        let mut callbacks = inner.callbacks.borrow_mut();
-        if callbacks.visibility_change.is_none() {
-            callbacks.visibility_change = Some(callback);
-        }
-    }
-}
-
-fn press(inner: &WindowInner, keystroke: Keystroke) {
-    inner.handle_input(PlatformInput::KeyDown(KeyDownEvent {
-        keystroke: keystroke.clone(),
-        is_held: false,
-        prefer_character_input: false,
-    }));
-    inner.handle_input(PlatformInput::KeyUp(KeyUpEvent { keystroke }));
-}
-
-fn named(key: &str) -> Keystroke {
-    Keystroke {
-        modifiers: Default::default(),
-        key: key.into(),
-        key_char: None,
-    }
-}
-
-fn has_marked_text(inner: &WindowInner) -> bool {
-    let mut marked = false;
-    inner.with_input_handler(|handler| marked = handler.marked_text_range().is_some());
-    marked
 }
 
 fn input_event(inner: &WindowInner, event: ViewEvent) {
@@ -388,21 +337,13 @@ fn input_event(inner: &WindowInner, event: ViewEvent) {
     }
     match event {
         ViewEvent::Touch { phase, id, x, y } => {
-            let scale = inner.state.borrow().scale_factor;
-            let position = point(px(x / scale), px(y / scale));
-            inner.state.borrow_mut().mouse_position = position;
-            inner.handle_input(PlatformInput::Touch(TouchEvent {
-                id: TouchId(id as u64),
-                phase: match phase {
-                    0 => TouchPhase::Started,
-                    1 => TouchPhase::Moved,
-                    2 => TouchPhase::Ended,
-                    _ => TouchPhase::Cancelled,
-                },
-                position,
-                predicted_position: None,
-                force: None,
-            }));
+            let phase = match phase {
+                0 => TouchPhase::Started,
+                1 => TouchPhase::Moved,
+                2 => TouchPhase::Ended,
+                _ => TouchPhase::Cancelled,
+            };
+            mobile::touch(inner, id as u64, phase, x, y);
         }
         ViewEvent::Key {
             down,
@@ -425,24 +366,7 @@ fn input_event(inner: &WindowInner, event: ViewEvent) {
                 PlatformInput::KeyUp(KeyUpEvent { keystroke })
             });
         }
-        ViewEvent::CommitText(text) => {
-            let mut chars = text.chars();
-            match (chars.next(), chars.next()) {
-                // One typed character: deliver it as a key press so key
-                // bindings see it; unhandled presses insert their text.
-                (Some(c), None) if !has_marked_text(inner) => press(inner, keys::char_keystroke(c)),
-                _ => {
-                    for (i, line) in text.split('\n').enumerate() {
-                        if i > 0 {
-                            press(inner, named("enter"));
-                        }
-                        if !line.is_empty() {
-                            inner.insert_text(line);
-                        }
-                    }
-                }
-            }
-        }
+        ViewEvent::CommitText(text) => mobile::commit_text(inner, &text),
         ViewEvent::ComposingText(text) => inner.with_input_handler(|handler| {
             if text.is_empty() {
                 handler.replace_text_in_range(None, "");
@@ -454,16 +378,16 @@ fn input_event(inner: &WindowInner, event: ViewEvent) {
         ViewEvent::FinishComposing => inner.with_input_handler(|handler| handler.unmark_text()),
         ViewEvent::DeleteSurrounding { before, after } => {
             for _ in 0..before {
-                press(inner, named("backspace"));
+                mobile::press(inner, mobile::named("backspace"));
             }
             for _ in 0..after {
-                press(inner, named("delete"));
+                mobile::press(inner, mobile::named("delete"));
             }
         }
-        ViewEvent::EditAction(action) => press(inner, action.keystroke()),
+        ViewEvent::EditAction(action) => mobile::press(inner, action.keystroke()),
         ViewEvent::Autofill(text) => {
             // Autofill replaces the whole value: select it, then type over it.
-            press(inner, keys::EditAction::SelectAll.keystroke());
+            mobile::press(inner, keys::EditAction::SelectAll.keystroke());
             inner.insert_text(&text);
         }
         ViewEvent::Back => {

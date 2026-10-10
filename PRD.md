@@ -201,7 +201,7 @@ tauri-plugin-gpui = "..."
 tauri-plugin-gpui = { version = "...", features = ["mobile"] }
 The goal is that desktop-only consumers do not compile the mobile-specific dependency graph.
 Mobile architecture
-GPUI core (gpui-pre 0.3.8) defines the mobile platform contract itself: raw touch input with a portable gesture recognizer, window insets, the soft keyboard, the back action and app lifecycle phases. The plugin therefore implements that contract directly on top of Tauri's Android activity instead of depending on gpui-mobile, whose platform layer owns the activity (NativeActivity) and so cannot share it with Tauri.
+GPUI core (gpui-pre 0.3.8) defines the mobile platform contract itself: raw touch input with a portable gesture recognizer, window insets, the soft keyboard, the back action and app lifecycle phases. The plugin therefore implements that contract directly on top of Tauri's Android activity and TAO's iOS view instead of depending on gpui-mobile, whose platform layer owns the activity (NativeActivity) or application and so cannot share it with Tauri.
 The same ownership principle applies:
 Tauri Mobile
     │

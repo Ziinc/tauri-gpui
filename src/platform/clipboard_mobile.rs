@@ -1,4 +1,5 @@
-//! Android clipboard (plain text) through `ClipboardManager` on the GpuiView.
+//! Mobile clipboard (plain text): `ClipboardManager` on Android, the general
+//! `UIPasteboard` on iOS.
 //!
 //! GPUI string metadata is kept in-process and reattached while the clipboard
 //! still holds the text it was written with, as on desktop.
@@ -20,7 +21,7 @@ pub(crate) struct Clipboard {
 
 impl Clipboard {
     pub(crate) fn read(&self, _kind: Kind) -> Option<ClipboardItem> {
-        let text = crate::android::clipboard_text()?;
+        let text = crate::mobile::clipboard_text()?;
         let metadata = self
             .metadata
             .borrow()
@@ -35,12 +36,12 @@ impl Clipboard {
 
     pub(crate) fn write(&self, _kind: Kind, item: ClipboardItem) {
         let Some(text) = item.text() else {
-            log::debug!("tauri-plugin-gpui: only text can be copied on Android");
+            log::debug!("tauri-plugin-gpui: only text can be copied on mobile");
             return;
         };
         *self.metadata.borrow_mut() = item
             .metadata()
             .map(|metadata| (text.clone(), metadata.clone()));
-        crate::android::set_clipboard_text(&text);
+        crate::mobile::set_clipboard_text(&text);
     }
 }

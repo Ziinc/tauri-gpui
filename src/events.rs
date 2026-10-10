@@ -1,5 +1,9 @@
 //! Translation of the TAO event subset GPUI needs.
 
+#[cfg(any(gpui_mobile, test))]
+#[cfg_attr(not(gpui_mobile), allow(dead_code))]
+pub(crate) mod mobile;
+
 use gpui::{
     Capslock, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
