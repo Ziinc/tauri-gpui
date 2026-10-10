@@ -151,8 +151,16 @@ impl Runtime {
         else {
             return;
         };
+        let (width, height, density) = (
+            params.physical_size.width.0,
+            params.physical_size.height.0,
+            params.scale_factor,
+        );
         match self.attach_surface(&window, options, open, params) {
             Ok(()) => {
+                log::info!(
+                    "tauri-plugin-gpui: GPUI attached ({width}x{height} px, density {density})"
+                );
                 if let Some(inner) = self.attached() {
                     let insets = self.android.insets.borrow().clone();
                     inner.state.borrow_mut().insets = insets;

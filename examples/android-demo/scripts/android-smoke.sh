@@ -93,7 +93,7 @@ wait_for "tapped count=3" 20 || true
 
 log
 adb logcat -d > "$OUT/logcat-full.txt"
-if grep -E "FATAL EXCEPTION|panicked at" "$OUT/logcat-full.txt"; then
+if grep -E "FATAL EXCEPTION|panicked at|attaching GPUI failed" "$OUT/logcat-full.txt"; then
   echo "FAIL: crash in logcat"
   failures=$((failures + 1))
 fi
