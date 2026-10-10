@@ -50,6 +50,10 @@ mod ios;
 #[path = "ios/keys.rs"]
 #[allow(dead_code)]
 mod ios_keys;
+#[cfg(all(test, not(gpui_ios)))]
+#[path = "ios/text.rs"]
+#[allow(dead_code)]
+mod ios_text;
 
 /// The active mobile platform layer (keyboard, clipboard, appearance).
 #[cfg(gpui_android)]

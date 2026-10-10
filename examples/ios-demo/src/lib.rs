@@ -20,6 +20,9 @@ use gpui_kit::{
 };
 use tauri_plugin_gpui::{GpuiConfig, GpuiOptions, GpuiWindowExt};
 
+#[cfg(target_os = "ios")]
+mod ime_check;
+
 const ROWS: usize = 60;
 
 // Fixed layout metrics (logical pixels), logged so a smoke test can locate
@@ -58,6 +61,11 @@ impl Demo {
             },
         )
         .detach();
+        #[cfg(target_os = "ios")]
+        if ime_check::enabled() {
+            input.update(cx, |input, cx| input.focus(window, cx));
+            ime_check::run();
+        }
         // Hidden in the background, visible again in the foreground.
         cx.observe_window_visibility(window, |_, visibility, _, _| {
             let visible = matches!(visibility, WindowVisibility::Visible);
