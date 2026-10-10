@@ -7,8 +7,8 @@
 //! interaction is logged to stderr under the `ios-demo` target so the CI
 //! smoke test can assert on the simulator's console.
 //!
-//! Launched with `--focus-input`, it focuses the input on its first frame,
-//! which shows the software keyboard without a tap.
+//! Launched with `--focus-input`, it focuses the input a second after launch
+//! (once the app is active), which shows the software keyboard without a tap.
 
 use gpui_kit::{
     component::{
@@ -38,7 +38,6 @@ struct Demo {
     last_logged_offset: f32,
     last_logged_top: Option<Pixels>,
     last_logged_bottom: Option<Pixels>,
-    focus_input: bool,
     last_appearance: Option<WindowAppearance>,
 }
 
@@ -65,6 +64,21 @@ impl Demo {
             log::info!(target: "ios-demo", "visibility visible={visible}");
         })
         .detach();
+        if std::env::args().any(|arg| arg == "--focus-input") {
+            // UIKit only shows the keyboard for a first responder in an
+            // active, on-screen window, which the first frame precedes.
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                this.update_in(cx, |this, window, cx| {
+                    log::info!(target: "ios-demo", "focusing input");
+                    this.input.update(cx, |input, cx| input.focus(window, cx));
+                })
+                .ok();
+            })
+            .detach();
+        }
         Self {
             taps: 0,
             input,
@@ -73,7 +87,6 @@ impl Demo {
             last_logged_offset: 0.,
             last_logged_top: None,
             last_logged_bottom: None,
-            focus_input: std::env::args().any(|arg| arg == "--focus-input"),
             last_appearance: None,
         }
     }
@@ -81,10 +94,6 @@ impl Demo {
 
 impl Render for Demo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if std::mem::take(&mut self.focus_input) {
-            log::info!(target: "ios-demo", "focusing input");
-            self.input.update(cx, |input, cx| input.focus(window, cx));
-        }
         let offset = -f32::from(self.scroll.offset().y);
         if (offset - self.last_logged_offset).abs() >= 200. {
             self.last_logged_offset = offset;

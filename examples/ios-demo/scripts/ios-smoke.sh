@@ -111,7 +111,8 @@ xcrun simctl io "$device" screenshot "$out/resumed.png" >/dev/null
 xcrun simctl launch --terminate-running-process \
   --stdout="$out/stdout.log" --stderr="$out/stderr.log" "$device" "$bundle" --focus-input
 wait_for 'ios-demo: focusing input'
-sleep 3
+wait_for 'layout bottom=[0-9]{3}' 30
+sleep 2
 sync_log
 bottoms=$(sed -n '/ios-demo: focusing input/,$p' "$log" | grep -oE 'layout bottom=[0-9.]+' | cut -d= -f2)
 echo "ios-smoke: bottom insets:" $bottoms
