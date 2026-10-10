@@ -1,6 +1,8 @@
 //! Android: feeds `GpuiView` events (surface, touch, keys, IME, insets) to
 //! the attached GPUI window. See `crate::android` for the JNI side.
 
+mod input;
+
 use std::{cell::RefCell, ffi::c_void, path::Path, rc::Rc};
 
 use gpui::{
@@ -44,6 +46,7 @@ pub(crate) struct AndroidState {
     surface: RefCell<Option<Surface>>,
     /// Insets reported before GPUI was attached.
     insets: RefCell<WindowInsets>,
+    input: RefCell<input::InputSync>,
 }
 
 fn raw_window(window: &NativeWindow) -> RawWindow {
@@ -166,6 +169,8 @@ impl Runtime {
                     inner.state.borrow_mut().insets = insets;
                     inner.state.borrow_mut().active = true;
                 }
+                // Tauri's setup has registered the app's plugins by now.
+                crate::android::load_plugins();
             }
             Err(error) => log::error!("tauri-plugin-gpui: attaching GPUI failed: {error}"),
         }
@@ -271,6 +276,13 @@ impl Runtime {
                     inner.schedule_frame();
                 }
             }
+            ViewEvent::LongPress { x, y } => {
+                let scale = crate::android::density().max(0.1);
+                self.android
+                    .input
+                    .borrow_mut()
+                    .long_press(point(px(x / scale), px(y / scale)));
+            }
             ViewEvent::Back => {
                 // The app-level handler (`tauri_plugin_gpui::on_back`) wins;
                 // otherwise GPUI's per-window back handler, if one is set.
@@ -369,6 +381,11 @@ fn has_marked_text(inner: &WindowInner) -> bool {
 }
 
 fn input_event(inner: &WindowInner, event: ViewEvent) {
+    if !matches!(event, ViewEvent::Touch { .. } | ViewEvent::Back) {
+        // Typing and toolbar actions can change the text without moving the
+        // caret (delete, autofill): have it read again after the frame.
+        inner.text_input_changed(None);
+    }
     match event {
         ViewEvent::Touch { phase, id, x, y } => {
             let scale = inner.state.borrow().scale_factor;
@@ -442,6 +459,12 @@ fn input_event(inner: &WindowInner, event: ViewEvent) {
             for _ in 0..after {
                 press(inner, named("delete"));
             }
+        }
+        ViewEvent::EditAction(action) => press(inner, action.keystroke()),
+        ViewEvent::Autofill(text) => {
+            // Autofill replaces the whole value: select it, then type over it.
+            press(inner, keys::EditAction::SelectAll.keystroke());
+            inner.insert_text(&text);
         }
         ViewEvent::Back => {
             let callback = inner.callbacks.borrow_mut().back.take();
