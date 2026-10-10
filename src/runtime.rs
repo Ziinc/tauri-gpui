@@ -658,6 +658,10 @@ impl Runtime {
         if more_work {
             self.waker.wake();
         }
+
+        // Tell the keyboard about text GPUI changed on its own.
+        #[cfg(gpui_ios)]
+        crate::ios::sync();
     }
 
     /// Releases every surface while thread locals are still alive.
