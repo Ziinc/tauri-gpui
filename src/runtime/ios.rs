@@ -22,7 +22,7 @@ use crate::{
     GpuiError, GpuiOptions,
     events::mobile,
     ios::{ViewEvent, keys::HardwareKey},
-    platform::window::WindowInner,
+    platform::window::{RawWindow, WindowInner},
 };
 
 #[derive(Default)]
@@ -109,7 +109,7 @@ impl Runtime {
             WindowAppearance::Light
         };
         let result = self
-            .seed_metal_context()
+            .seed_metal_context(params.raw)
             .and_then(|()| self.attach_surface(window, options, open, params));
         if result.is_err() {
             crate::ios::uninstall();
@@ -122,7 +122,7 @@ impl Runtime {
     /// there is one, so create that context on Metal first, probing the
     /// adapter with a detached `CAMetalLayer` rather than TAO's view (each
     /// surface on a view leaves a sublayer behind).
-    fn seed_metal_context(&self) -> Result<(), GpuiError> {
+    fn seed_metal_context(&self, raw: RawWindow) -> Result<(), GpuiError> {
         if self.platform.gpu_context.borrow().is_some() {
             return Ok(());
         }
@@ -132,7 +132,8 @@ impl Runtime {
             flags: wgpu::InstanceFlags::default(),
             backend_options: wgpu::BackendOptions::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            display: None,
+            // The renderer creates its surface without a display handle.
+            display: Some(Box::new(raw)),
         });
         let layer = crate::ios::metal_layer().ok_or_else(|| init("no CAMetalLayer".into()))?;
         // SAFETY: `layer` is a live CAMetalLayer and outlives the surface.
