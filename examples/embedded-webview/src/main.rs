@@ -6,6 +6,11 @@
 //!   loaded in a Tauri child webview and placed by `webview_frame`.
 //! * Both sides share one counter that lives in Rust. The web screen reaches
 //!   it through Tauri commands and events; GPUI reads it directly.
+//!
+//! Set `EMBEDDED_WEBVIEW_CHAOS=<dir>` to run the stress scenario in
+//! `chaos.rs` instead (Linux/X11; see `scripts/chaos.sh`).
+
+mod chaos;
 
 use std::sync::{
     Arc,
@@ -53,8 +58,24 @@ struct Shell {
     app: AppHandle,
     counter: Counter,
     screen: Screen,
-    /// The legacy web screen, added once the window is attached.
-    reports: Option<Webview<Wry>>,
+    reports: gpui::Entity<ReportsPane>,
+}
+
+/// The legacy web screen. A view of its own, rendered cached like a dock
+/// panel would be: the shell re-renders (say, the status bar) without it.
+struct ReportsPane {
+    /// Added once the window is attached.
+    webview: Option<Webview<Wry>>,
+}
+
+impl Render for ReportsPane {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        gpui::div()
+            .size_full()
+            .when_some(self.webview.as_ref(), |this, webview| {
+                this.child(webview_frame(webview))
+            })
+    }
 }
 
 /// Lets Tauri commands reach the shell.
@@ -175,9 +196,12 @@ impl Render for Shell {
                             .child(title),
                     )
                     .child(gpui::div().flex_1().min_h_0().map(|this| {
-                        match (self.screen, &self.reports) {
-                            (Screen::Reports, Some(reports)) => this.child(webview_frame(reports)),
-                            _ => this.child(self.overview(cx)),
+                        match self.screen {
+                            Screen::Reports => this.child(
+                                gpui::AnyView::from(self.reports.clone())
+                                    .cached(gpui::StyleRefinement::default().size_full()),
+                            ),
+                            Screen::Overview => this.child(self.overview(cx)),
                         }
                     }))
                     .child(
@@ -217,6 +241,25 @@ fn show_overview(app: AppHandle) {
     });
 }
 
+/// Adds the web screen to the GPUI window and hands it to the Reports pane.
+fn add_reports(app: &AppHandle, window: &tauri::Window<Wry>) -> tauri::Result<()> {
+    // Child webviews are added after GPUI is attached; `webview_frame`
+    // shows and positions it from the next frame on.
+    let webview = window.add_child(
+        WebviewBuilder::new("reports", WebviewUrl::App("index.html".into())),
+        LogicalPosition::new(0., 0.),
+        LogicalSize::new(1., 1.),
+    )?;
+    webview.hide()?;
+    update_shell(app, move |shell, cx| {
+        shell.reports.update(cx, |pane, cx| {
+            pane.webview = Some(webview);
+            cx.notify();
+        });
+    });
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Counter::default())
@@ -230,28 +273,20 @@ fn main() {
                 .inner_size(900.0, 600.0)
                 .build()?;
             window.attach_gpui(move |cx| {
+                let reports = cx.new(|_| ReportsPane { webview: None });
                 let shell = cx.new(|_| Shell {
                     app: handle,
                     counter,
                     screen: Screen::Reports,
-                    reports: None,
+                    reports,
                 });
                 cx.set_global(ShellRef(shell.downgrade()));
                 shell
             })?;
-
-            // Child webviews are added after GPUI is attached; `webview_frame`
-            // shows and positions it from the next frame on.
-            let reports = window.add_child(
-                WebviewBuilder::new("reports", WebviewUrl::App("index.html".into())),
-                LogicalPosition::new(0., 0.),
-                LogicalSize::new(1., 1.),
-            )?;
-            reports.hide()?;
-            update_shell(app.handle(), move |shell, cx| {
-                shell.reports = Some(reports);
-                cx.notify();
-            });
+            add_reports(app.handle(), &window)?;
+            if let Some(dir) = std::env::var_os("EMBEDDED_WEBVIEW_CHAOS") {
+                chaos::spawn(app.handle().clone(), dir.into());
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

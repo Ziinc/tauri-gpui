@@ -129,8 +129,11 @@ div().flex_1().child(tauri_plugin_gpui::webview_frame(&reports))
 - The webview keeps Tauri IPC, so the web screen calls commands and listens to events as before. Shared state lives in Rust; GPUI reads it directly.
 - The webview is shown while its frame is painted and hidden in any frame that leaves it out, so switching GPUI screens needs no bookkeeping.
 - On Linux the webview is moved into its own X11 child window so it stacks above GPUI, and keyboard focus moves between the two on click. Wayland is not supported.
+- The webview follows its frame through cached views (`AnyView::cached`), which reuse the previous frame without running the element again.
+- Render each webview in at most one frame. A webview created to replace a closed one needs a new label, because frames track webviews by label.
 - Limits: the webview always draws above GPUI, so GPUI popovers, menus and tooltips that overlap it are hidden; clipping by scrolling ancestors is rectangular. Desktop only; Tauri child webviews are not available on mobile.
 - Run it with `cargo run -p embedded-webview`. Verified on Linux (X11); macOS and Windows use Tauri's native child views and are untested.
+- `examples/embedded-webview/scripts/chaos.sh` stresses it on a virtual X display (rapid screen switches, re-renders around a cached view, resizes, maximize, webview replacement, teardown while shown) and checks every screenshot's pixels. On Linux, GTK logs `_gdk_frame_clock_*` criticals and a `gdk_window_set_user_time` warning when a webview's X11 window is created; they are harmless.
 
 ## Platform status
 
