@@ -368,6 +368,8 @@ impl Runtime {
             display: RefCell::default(),
             waker: self.waker.clone(),
             defer,
+            #[cfg(not(gpui_mobile))]
+            webviews: RefCell::default(),
         });
         // The window may have been built maximized, fullscreen or minimized.
         inner.sync_window_mode();
@@ -690,6 +692,12 @@ impl Runtime {
             self.forget_platform_refs(&surface);
             surface.destroy();
         }
+    }
+
+    /// The attached surface of a Tauri window, if any.
+    #[cfg(not(gpui_mobile))]
+    pub(crate) fn surface(&self, label: &str) -> Option<Rc<WindowInner>> {
+        self.surfaces.try_borrow().ok()?.get(label).cloned()
     }
 
     pub(crate) fn is_attached(&self, label: &str) -> bool {

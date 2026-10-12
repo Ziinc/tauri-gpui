@@ -18,7 +18,7 @@ links = "tauri-plugin-gpui"
 [workspace]
 # The demo is its own workspace so gpui-kit (a demo-only dependency) never
 # enters this crate's lockfile or `--workspace` builds.
-members = [".", "examples/basic"]
+members = [".", "examples/basic", "examples/embedded-webview"]
 exclude = ["examples/gpui-demo", "examples/android-demo"]
 
 [features]
@@ -48,6 +48,11 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8", features = ["font-kit"] }
+# Hosting embedded webviews in their own X11 child window (`src/webview/linux.rs`).
+# Same versions Tauri's WebKitGTK backend uses.
+gtk = "0.18"
+gdkx11 = "0.18"
+x11-dl = "2.21"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Same major version Tauri uses, so `run_on_android_context` hands us its JNIEnv.

@@ -40,6 +40,8 @@ mod events;
 mod platform;
 #[cfg(gpui_backend)]
 mod runtime;
+#[cfg(all(gpui_backend, not(gpui_mobile)))]
+mod webview;
 
 #[cfg(gpui_android)]
 mod android;
@@ -59,6 +61,8 @@ use ios as mobile;
 
 pub use error::GpuiError;
 pub use gpui;
+#[cfg(all(gpui_backend, not(gpui_mobile)))]
+pub use webview::{WebviewFrame, webview_frame};
 
 use tauri::Wry;
 
@@ -217,6 +221,8 @@ pub trait GpuiWindowExt {
     /// destroyed together with the Tauri window.
     ///
     /// Must be called on the main thread for a window without a WebView.
+    /// Child webviews can be added afterwards and placed with
+    /// [`webview_frame`].
     /// When called from inside GPUI code the mount completes right after the
     /// current GPUI update returns.
     fn attach_gpui<F, V>(&self, root: F) -> Result<(), GpuiError>

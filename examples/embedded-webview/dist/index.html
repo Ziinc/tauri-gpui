@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Reports</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: system-ui, sans-serif;
+        background: #eff1f5;
+        color: #4c4f69;
+      }
+      .count { font-size: 48px; margin: 12px 0; }
+      button { font-size: 14px; padding: 8px 14px; margin-right: 8px; }
+    </style>
+  </head>
+  <body>
+    <!-- Stands in for the existing web frontend (React or otherwise). -->
+    <h2>Reports, rendered by the web frontend</h2>
+    <p>This screen has not been migrated yet. It talks to Rust over Tauri IPC.</p>
+    <div class="count" id="count">…</div>
+    <button id="increment">Increment from the web</button>
+    <button id="overview">Go to the GPUI Overview</button>
+    <p><input id="note" placeholder="Type here" /></p>
+    <script>
+      const { invoke } = window.__TAURI__.core;
+      const { listen } = window.__TAURI__.event;
+      const count = document.getElementById("count");
+      const show = (value) => (count.textContent = value);
+      invoke("count").then(show);
+      listen("count-changed", (event) => show(event.payload));
+      document.getElementById("increment").onclick = () => invoke("increment").then(show);
+      document.getElementById("overview").onclick = () => invoke("show_overview");
+    </script>
+  </body>
+</html>

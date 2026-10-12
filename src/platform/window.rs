@@ -141,6 +141,9 @@ pub(crate) struct WindowInner {
     pub waker: Arc<LoopWaker>,
     /// Actions that must run outside of any GPUI update (see `Runtime::defer`).
     pub defer: Rc<dyn Fn(Box<dyn FnOnce()>)>,
+    /// Child webviews placed by `webview_frame`, keyed by webview label.
+    #[cfg(not(gpui_mobile))]
+    pub webviews: RefCell<std::collections::HashMap<String, crate::webview::EmbeddedWebview>>,
 }
 
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
@@ -737,6 +740,8 @@ impl PlatformWindow for TauriGpuiWindow {
             return;
         };
         renderer.draw(scene);
+        #[cfg(not(gpui_mobile))]
+        crate::webview::sync(&self.inner);
         if renderer.device_lost() {
             log::warn!(
                 "GPU device lost; recovering renderer for `{}`",
