@@ -78,6 +78,8 @@ pub(crate) struct Runtime {
     tao_labels: RefCell<HashMap<TaoWindowId, String>>,
     mounts: RefCell<VecDeque<Mount>>,
     deferred: Rc<RefCell<Vec<Box<dyn FnOnce()>>>>,
+    /// Reused by `drain` to snapshot `surfaces` without allocating.
+    scratch: RefCell<Vec<Rc<WindowInner>>>,
     depth: Cell<usize>,
     proxy_installed: Cell<bool>,
     #[cfg(gpui_android)]
@@ -155,6 +157,7 @@ pub(crate) fn initialize(app: AppHandle<Wry>, config: GpuiConfig) -> Result<(), 
         tao_labels: RefCell::default(),
         mounts: RefCell::default(),
         deferred: Rc::default(),
+        scratch: RefCell::default(),
         depth: Cell::new(0),
         proxy_installed: Cell::new(false),
         #[cfg(gpui_android)]
@@ -644,7 +647,8 @@ impl Runtime {
         let frames_allowed = !self.ios.background.get();
         #[cfg(not(gpui_ios))]
         let frames_allowed = true;
-        let surfaces: Vec<_> = self.surfaces.borrow().values().cloned().collect();
+        let mut surfaces = self.scratch.take();
+        surfaces.extend(self.surfaces.borrow().values().cloned());
         {
             let _guard = self.enter();
             for surface in &surfaces {
@@ -665,6 +669,8 @@ impl Runtime {
             && surfaces
                 .iter()
                 .any(|s| s.reported_visible.get() && s.frame_pending.get());
+        surfaces.clear();
+        self.scratch.replace(surfaces);
 
         #[cfg(gpui_android)]
         self.sync_text_input();
