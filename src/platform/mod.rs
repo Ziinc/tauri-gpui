@@ -215,7 +215,7 @@ fn unsupported_receiver<T>(operation: &'static str) -> oneshot::Receiver<Result<
     rx
 }
 
-fn log_unsupported(operation: &'static str) {
+pub(crate) fn log_unsupported(operation: &'static str) {
     log::debug!("tauri-plugin-gpui: `{operation}` is not supported by the minimal GPUI adapter");
 }
 
