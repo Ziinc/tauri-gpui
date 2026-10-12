@@ -1785,6 +1785,82 @@ fn gpui_window_ops(h: &mut Harness) {
     h.window_gone(&label);
 }
 
+// ---------------------------------------------------------------------------
+// Benchmarks (run only when named in CHAOS_ONLY)
+// ---------------------------------------------------------------------------
+
+/// Main-thread cost of window move/resize storms. Every move, resize and
+/// focus event can make the plugin re-read the window mode from Tauri, so
+/// this reports what one re-read costs and how long a storm takes to reach
+/// GPUI (median of `CHAOS_BENCH_ROUNDS`, default 15).
+fn bench_window_events(h: &mut Harness) {
+    let label = h.open_probe("bench", (400., 300.));
+    h.rendered(&label);
+
+    // What the plugin calls per window-mode re-read.
+    let l = label.clone();
+    let reread = h.main(move |app| {
+        let w = app.get_window(&l).unwrap();
+        let n = 500;
+        let start = Instant::now();
+        for _ in 0..n {
+            let _ = w.is_maximized();
+            let _ = w.is_fullscreen();
+            let _ = w.is_minimized();
+            let _ = w.current_monitor();
+        }
+        start.elapsed() / n
+    });
+
+    let rounds = std::env::var("CHAOS_BENCH_ROUNDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15);
+    let mut storms = Vec::new();
+    for round in 0..rounds {
+        // 100 moves and resizes in one main-thread turn; the round ends when
+        // GPUI renders the final size.
+        let size = (300. + (round % 2) as f64 * 100., 250.);
+        let l = label.clone();
+        let start = Instant::now();
+        h.main(move |app| {
+            let w = app.get_window(&l).unwrap();
+            for i in 0..100 {
+                let step = f64::from(i);
+                w.set_position(tauri::LogicalPosition::new(50. + step, 50. + step))
+                    .ok();
+                w.set_size(tauri::LogicalSize::new(size.0 + step, size.1 + step))
+                    .ok();
+            }
+            w.set_size(tauri::LogicalSize::new(size.0, size.1)).ok();
+        });
+        let l = label.clone();
+        let target = (size.0 as f32, size.1 as f32);
+        let settled = h.wait(Duration::from_secs(10), |h| {
+            h.seen(&l).is_some_and(|s| s.viewport == target)
+        });
+        if settled {
+            storms.push(start.elapsed());
+        }
+    }
+    storms.sort();
+    let median = storms.get(storms.len() / 2).copied().unwrap_or_default();
+    println!(
+        "bench: window-mode re-read {:.1} us; storm of 100 moves+resizes to GPUI: median {:.1} ms, min {:.1} ms ({} rounds)",
+        reread.as_secs_f64() * 1e6,
+        median.as_secs_f64() * 1e3,
+        storms.first().copied().unwrap_or_default().as_secs_f64() * 1e3,
+        storms.len()
+    );
+    h.check(
+        "window event storms reach GPUI",
+        storms.len() == rounds,
+        format!("{}/{rounds} settled", storms.len()),
+    );
+    h.close(&label);
+    h.window_gone(&label);
+}
+
 /// `cx.quit()` is routed through Tauri's exit flow (ExitRequested).
 fn gpui_quit(h: &mut Harness) {
     *QUIT_CODES.lock().unwrap() = Some(Vec::new());
@@ -1955,12 +2031,17 @@ fn run(app: AppHandle<Wry>, seed: u64) {
         ("gpui_window_ops", gpui_window_ops),
         ("gpui_quit", gpui_quit),
     ];
+    // Benchmarks are slow and only meaningful on a quiet machine: they run
+    // only when named in CHAOS_ONLY.
+    let benches: &[Scenario] = &[("bench_window_events", bench_window_events)];
     let only = std::env::var("CHAOS_ONLY").ok();
-    for (name, scenario) in scenarios {
-        if only
-            .as_deref()
-            .is_some_and(|o| !o.split(',').any(|o| o == *name))
-        {
+    let named = |name: &str| {
+        only.as_deref()
+            .is_some_and(|o| o.split(',').any(|o| o == name))
+    };
+    for (name, scenario) in scenarios.iter().chain(benches) {
+        let is_bench = benches.iter().any(|(b, _)| b == name);
+        if (only.is_some() || is_bench) && !named(name) {
             continue;
         }
         println!("chaos: [{:6.1}s] {name}", elapsed());
