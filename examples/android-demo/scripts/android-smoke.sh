@@ -70,6 +70,16 @@ ui_has() {
   return 1
 }
 # wait_for <regex> <timeout seconds>
+# ime_shown <secs> waits until the input method reports its window shown.
+ime_shown() {
+  local deadline=$((SECONDS + $1))
+  while (( SECONDS < deadline )); do
+    if adb shell dumpsys input_method | grep -q 'mInputShown=true'; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
 wait_for() {
   local deadline=$((SECONDS + $2))
   while (( SECONDS < deadline )); do
@@ -113,10 +123,12 @@ adb shell input swipe "$x" $((screen_h * 85 / 100)) "$x" $((screen_h * 50 / 100)
 sleep 2
 shot 03-scrolled
 
-# Soft keyboard and text input.
+# Soft keyboard and text input. Gboard drops key events until it has
+# started, which on a cold emulator can take longer than a fixed sleep.
 dismiss_dialogs
 adb shell input tap "$x" "$input_y"
-sleep 2
+ime_shown 20 || echo "NOTE: the soft keyboard was not reported shown within 20 s"
+sleep 1
 shot 04-keyboard
 adb shell input text "hello"
 adb shell input keyevent 66
