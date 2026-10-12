@@ -53,14 +53,20 @@ struct Probe {
     mouse_downs: usize,
     mouse_ups: usize,
     scrolls: usize,
+    navigates: usize,
+    visible: bool,
     keys: Vec<String>,
     text: String,
+    _visibility: gpui::Subscription,
 }
 
 impl Probe {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
+        let visibility = cx.observe_window_visibility(window, |this, visibility, _, _| {
+            this.visible = visibility.is_visible();
+        });
         Self {
             focus,
             renders: 0,
@@ -72,8 +78,11 @@ impl Probe {
             mouse_downs: 0,
             mouse_ups: 0,
             scrolls: 0,
+            navigates: 0,
+            visible: window.is_visible(),
             keys: Vec::new(),
             text: String::new(),
+            _visibility: visibility,
         }
     }
 }
@@ -102,6 +111,10 @@ impl Render for Probe {
                 cx.listener(|this, _, _, _| this.mouse_ups += 1),
             )
             .on_scroll_wheel(cx.listener(|this, _, _, _| this.scrolls += 1))
+            .on_mouse_down(
+                MouseButton::Navigate(gpui::NavigationDirection::Back),
+                cx.listener(|this, _, _, _| this.navigates += 1),
+            )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, _| {
                 this.keys.push(event.keystroke.key.clone());
             }))
@@ -213,6 +226,8 @@ struct Seen {
     mouse_downs: usize,
     mouse_ups: usize,
     scrolls: usize,
+    navigates: usize,
+    visible: bool,
     keys: Vec<String>,
     text: String,
 }
@@ -284,6 +299,10 @@ struct Harness {
 /// Set from `setup` before `init`: checks of API calls made before the
 /// runtime existed.
 static PRE_INIT: Mutex<Vec<(String, bool, String)>> = Mutex::new(Vec::new());
+
+/// What the plugin API returned when called from `GpuiConfig::on_launch`.
+type OnLaunchResult = (Option<GpuiError>, Result<(), String>);
+static ON_LAUNCH: Mutex<Option<OnLaunchResult>> = Mutex::new(None);
 
 static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
@@ -364,6 +383,8 @@ impl Harness {
                 mouse_downs: p.mouse_downs,
                 mouse_ups: p.mouse_ups,
                 scrolls: p.scrolls,
+                navigates: p.navigates,
+                visible: p.visible,
                 keys: p.keys.clone(),
                 text: p.text.clone(),
             })
@@ -488,6 +509,21 @@ fn api_contract(h: &mut Harness) {
     for (name, passed, detail) in PRE_INIT.lock().unwrap().drain(..) {
         h.check(name, passed, detail);
     }
+
+    let (with_app, attach) = ON_LAUNCH.lock().unwrap().take().expect("on_launch ran");
+    h.check(
+        "with_app inside on_launch fails with Reentrant",
+        matches!(with_app, Some(GpuiError::Reentrant)),
+        format!("{with_app:?}"),
+    );
+    let rendered = attach.is_ok() && h.rendered("on-launch");
+    h.check(
+        "attach_gpui inside on_launch mounts the window",
+        rendered,
+        format!("{attach:?}"),
+    );
+    h.close("on-launch");
+    h.window_gone("on-launch");
 
     // Effects queued inside with_app (here a `cx.defer`) must run on their
     // own, without waiting for unrelated event-loop activity (no window
@@ -1370,6 +1406,29 @@ fn input_chaos(h: &mut Harness) {
         ),
     );
 
+    // Extra buttons: back navigates, unknown buttons are not left clicks.
+    let before = h.seen(&label).unwrap_or_default();
+    xdotool(&["click", "8"]).ok();
+    for _ in 0..3 {
+        xdotool(&["click", "10"]).ok();
+    }
+    let l = label.clone();
+    let navigated = h.wait(Duration::from_secs(3), |h| {
+        h.seen(&l)
+            .is_some_and(|s| s.navigates == before.navigates + 1)
+    });
+    // Give stray clicks from button 10 time to arrive before comparing.
+    thread::sleep(Duration::from_millis(300));
+    let seen = h.seen(&label).unwrap_or_default();
+    h.check(
+        "back button navigates and unknown buttons are not left clicks",
+        navigated && seen.mouse_downs == before.mouse_downs,
+        format!(
+            "navigates {} -> {}, left downs {} -> {}",
+            before.navigates, seen.navigates, before.mouse_downs, seen.mouse_downs
+        ),
+    );
+
     h.close(&label);
     h.window_gone(&label);
 }
@@ -1398,6 +1457,89 @@ fn hide_show(h: &mut Harness) {
         "hide/show cycles keep the surface attached and rendering",
         renders && attached,
         format!("renders {renders}, attached {attached}"),
+    );
+    h.close(&label);
+    h.window_gone(&label);
+}
+
+/// Minimized windows are reported hidden to GPUI and get no frames.
+fn minimize(h: &mut Harness) {
+    if !h.has_wm {
+        h.check("minimize", true, "skipped: no window manager");
+        return;
+    }
+    let label = h.open_probe("minimize", (300., 200.));
+    h.rendered(&label);
+    let l = label.clone();
+    h.main(move |app| app.get_window(&l).unwrap().minimize().ok());
+    let l = label.clone();
+    let hidden = h.wait(Duration::from_secs(3), |h| {
+        h.seen(&l).is_some_and(|s| !s.visible)
+    });
+    h.check("minimizing reports the GPUI window hidden", hidden, "");
+    let before = h.seen(&label).map(|s| s.renders).unwrap_or(0);
+    h.refresh(&label);
+    thread::sleep(Duration::from_millis(300));
+    let after = h.seen(&label).map(|s| s.renders).unwrap_or(0);
+    h.check(
+        "a minimized window renders no frames",
+        after == before,
+        format!("renders {before} -> {after}"),
+    );
+    let l = label.clone();
+    h.main(move |app| app.get_window(&l).unwrap().unminimize().ok());
+    let l = label.clone();
+    let shown = h.wait(Duration::from_secs(3), |h| {
+        h.seen(&l).is_some_and(|s| s.visible && s.renders > before)
+    });
+    h.check(
+        "restoring reports it visible and renders the pending frame",
+        shown,
+        "",
+    );
+    h.close(&label);
+    h.window_gone(&label);
+}
+
+/// GPUI sees the live monitor layout, and window appearance matches Tauri.
+fn displays(h: &mut Harness) {
+    let label = h.open_probe("display", (300., 200.));
+    h.rendered(&label);
+    let l = label.clone();
+    let tauri_monitors = h.main(move |app| {
+        let monitors = app.available_monitors().unwrap();
+        let current = app.get_window(&l).unwrap().current_monitor().unwrap();
+        let logical = |m: &tauri::Monitor| {
+            let p = m.position().to_logical::<f64>(m.scale_factor());
+            let s = m.size().to_logical::<f64>(m.scale_factor());
+            (p.x as f32, p.y as f32, s.width as f32, s.height as f32)
+        };
+        (
+            monitors.iter().map(logical).collect::<Vec<_>>(),
+            current.as_ref().map(logical),
+        )
+    });
+    let l = label.clone();
+    let gpui_monitors = h.gpui(move |cx| {
+        let bounds = |d: &std::rc::Rc<dyn gpui::PlatformDisplay>| {
+            let b = d.bounds();
+            (
+                f32::from(b.origin.x),
+                f32::from(b.origin.y),
+                f32::from(b.size.width),
+                f32::from(b.size.height),
+            )
+        };
+        let all = cx.displays().iter().map(bounds).collect::<Vec<_>>();
+        let current = with_gpui_window(cx, &l, |window, cx| window.display(cx))
+            .flatten()
+            .map(|d| bounds(&d));
+        (all, current)
+    });
+    h.check(
+        "GPUI displays match Tauri's monitors",
+        tauri_monitors == gpui_monitors,
+        format!("tauri {tauri_monitors:?}, gpui {gpui_monitors:?}"),
     );
     h.close(&label);
     h.window_gone(&label);
@@ -1731,7 +1873,19 @@ fn main() {
             let start = Instant::now();
             tauri_plugin_gpui::init_with(
                 app,
-                GpuiConfig::new().on_launch(move |cx| cx.set_global(TauriHandle(handle))),
+                GpuiConfig::new().on_launch(move |cx| {
+                    // The runtime is live inside on_launch: with_app is
+                    // reentrant and attaching completes after the update.
+                    let with_app = tauri_plugin_gpui::with_app(|_| ()).err();
+                    let attach = tauri::WindowBuilder::new(&handle, "on-launch")
+                        .title("on-launch")
+                        .inner_size(300., 200.)
+                        .build()
+                        .map_err(|e| e.to_string())
+                        .and_then(|w| attach_probe(&w).map_err(|e| e.to_string()));
+                    *ON_LAUNCH.lock().unwrap() = Some((with_app, attach));
+                    cx.set_global(TauriHandle(handle))
+                }),
             )?;
             println!(
                 "chaos: [{:6.1}s] GPUI runtime initialized in {:.1}s",
@@ -1792,6 +1946,8 @@ fn run(app: AppHandle<Wry>, seed: u64) {
         ("thread_hammer", thread_hammer),
         ("input_chaos", input_chaos),
         ("hide_show", hide_show),
+        ("minimize", minimize),
+        ("displays", displays),
         ("many_windows", many_windows),
         ("gpui_remove_window", gpui_remove_window),
         ("task_flood", task_flood),

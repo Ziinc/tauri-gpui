@@ -164,10 +164,12 @@ pub(crate) fn initialize(app: AppHandle<Wry>, config: GpuiConfig) -> Result<(), 
     }));
     #[cfg(gpui_mobile)]
     crate::mobile::set_waker(runtime.waker.clone());
+    // Published first so `on_launch` can use the plugin API (attaching
+    // completes once the update returns, as from any GPUI code).
+    RUNTIME.with(|slot| slot.set(Some(runtime)));
     if let Some(on_launch) = config.on_launch {
         runtime.update(on_launch)?;
     }
-    RUNTIME.with(|slot| slot.set(Some(runtime)));
     Ok(())
 }
 
@@ -285,11 +287,7 @@ impl Runtime {
         };
         let appearance = window
             .theme()
-            .map(|theme| match theme {
-                tauri::Theme::Dark => gpui::WindowAppearance::Dark,
-                _ => gpui::WindowAppearance::Light,
-            })
-            .unwrap_or(gpui::WindowAppearance::Light);
+            .map_or(gpui::WindowAppearance::Light, crate::platform::appearance);
 
         let raw = RawWindow {
             window: window
@@ -338,6 +336,7 @@ impl Runtime {
         )
         .map_err(|e| GpuiError::RendererInitialization(format!("{e:#}")))?;
 
+        let sprite_atlas = renderer.sprite_atlas().clone();
         let defer: Rc<dyn Fn(Box<dyn FnOnce()>)> = Rc::new({
             let deferred = self.deferred.clone();
             let waker = self.waker.clone();
@@ -360,14 +359,17 @@ impl Runtime {
             callbacks: RefCell::default(),
             frame_pending: Cell::new(false),
             force_present: Cell::new(false),
+            reported_visible: Cell::new(true),
+            sprite_atlas,
             closed: Cell::new(false),
             gpui_handle: Cell::new(None),
-            display: self.platform.display.clone(),
+            display: RefCell::default(),
             waker: self.waker.clone(),
             defer,
         });
-        // The window may have been built maximized or fullscreen.
+        // The window may have been built maximized, fullscreen or minimized.
         inner.sync_window_mode();
+        inner.reported_visible.set(inner.state.borrow().visible);
         self.surfaces.borrow_mut().insert(label, inner.clone());
 
         let window_options = WindowOptions {
@@ -542,6 +544,9 @@ impl Runtime {
                 // The OS asked for a repaint (expose, resize, ...): present
                 // even if GPUI has nothing new to render.
                 if let Some(inner) = self.surface_for(*window_id, context) {
+                    // Exposure also follows a restore TAO has no event for.
+                    let _guard = self.enter();
+                    inner.window_mode_changed();
                     inner.force_present.set(true);
                     inner.schedule_frame();
                 }
@@ -639,14 +644,25 @@ impl Runtime {
         #[cfg(not(gpui_ios))]
         let frames_allowed = true;
         let surfaces: Vec<_> = self.surfaces.borrow().values().cloned().collect();
-        if frames_allowed {
+        {
             let _guard = self.enter();
             for surface in &surfaces {
-                if surface.frame_pending.take() && !surface.closed.get() {
+                if surface.closed.get() {
+                    continue;
+                }
+                surface.flush_ime_commit();
+                // GPUI is told hidden windows get no frames; keep the request
+                // pending until the window is visible again.
+                if frames_allowed && surface.reported_visible.get() && surface.frame_pending.take()
+                {
                     surface.request_frame();
                 }
             }
         }
+        let frames_pending = frames_allowed
+            && surfaces
+                .iter()
+                .any(|s| s.reported_visible.get() && s.frame_pending.get());
 
         #[cfg(gpui_android)]
         self.sync_text_input();
@@ -654,7 +670,7 @@ impl Runtime {
         let more_work = self.dispatcher.has_main_work()
             || !self.mounts.borrow().is_empty()
             || !self.deferred.borrow().is_empty()
-            || (frames_allowed && surfaces.iter().any(|s| s.frame_pending.get()));
+            || frames_pending;
         if more_work {
             self.waker.wake();
         }

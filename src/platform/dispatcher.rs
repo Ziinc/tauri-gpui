@@ -176,8 +176,10 @@ impl PlatformDispatcher for TauriDispatcher {
     }
 
     fn dispatch_on_main_thread(&self, runnable: RunnableVariant, priority: Priority) {
-        self.main_queue.push(priority, runnable);
+        // Counted before it becomes poppable, so `pop_main` never decrements
+        // past zero.
         self.main_len.fetch_add(1, Ordering::AcqRel);
+        self.main_queue.push(priority, runnable);
         self.waker.wake();
     }
 
@@ -189,5 +191,50 @@ impl PlatformDispatcher for TauriDispatcher {
 
     fn spawn_realtime(&self, f: Box<dyn FnOnce() + Send>) {
         thread::spawn(f);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::RunnableMeta;
+
+    fn runnable() -> RunnableVariant {
+        let (runnable, task) = async_task::Builder::new()
+            .metadata(RunnableMeta::new_with_callers_location())
+            .spawn(|_| async {}, |_| {});
+        task.detach();
+        runnable
+    }
+
+    #[test]
+    fn main_queue_length_never_underflows() {
+        let dispatcher = Arc::new(TauriDispatcher::new(Arc::new(LoopWaker::new(Box::new(
+            || {},
+        )))));
+        const N: usize = 200_000;
+        let producer = {
+            let dispatcher = dispatcher.clone();
+            thread::spawn(move || {
+                for _ in 0..N {
+                    dispatcher.dispatch_on_main_thread(runnable(), Priority::default());
+                }
+            })
+        };
+        let mut popped = 0;
+        while popped < N {
+            // A pop that races ahead of the producer's length update must not
+            // wrap the counter.
+            assert!(
+                dispatcher.main_len.load(Ordering::Acquire) <= N,
+                "main_len wrapped"
+            );
+            if let Some(runnable) = dispatcher.pop_main() {
+                drop(runnable);
+                popped += 1;
+            }
+        }
+        producer.join().unwrap();
+        assert!(!dispatcher.has_main_work());
     }
 }
