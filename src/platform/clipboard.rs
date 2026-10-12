@@ -60,7 +60,7 @@ impl Clipboard {
             });
         }
         let image = self.with("clipboard image read", |cb| get(cb, kind).image())?;
-        encode_png(&image)
+        encode_png(image)
             .map(|png| ClipboardItem::new_image(&Image::from_bytes(ImageFormat::Png, png)))
     }
 
@@ -131,15 +131,22 @@ fn decode_rgba(image: &Image) -> Option<arboard::ImageData<'static>> {
     }
 }
 
-/// Encodes an OS clipboard RGBA buffer as PNG for GPUI.
-fn encode_png(image: &arboard::ImageData) -> Option<Vec<u8>> {
+/// Encodes an OS clipboard RGBA buffer as PNG for GPUI. Runs on the main
+/// thread during a paste, so it favors speed over size.
+fn encode_png(image: arboard::ImageData) -> Option<Vec<u8>> {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
     let rgba = image::RgbaImage::from_raw(
         image.width as u32,
         image.height as u32,
-        image.bytes.to_vec(),
+        image.bytes.into_owned(),
     )?;
     let mut png = Vec::new();
-    match rgba.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png) {
+    let encoder = PngEncoder::new_with_quality(
+        Cursor::new(&mut png),
+        CompressionType::Fast,
+        FilterType::Sub,
+    );
+    match rgba.write_with_encoder(encoder) {
         Ok(()) => Some(png),
         Err(e) => {
             log::warn!("tauri-plugin-gpui: cannot read clipboard image: {e}");
@@ -159,9 +166,61 @@ mod tests {
             height: 1,
             bytes: Cow::Owned(vec![255, 0, 0, 255, 0, 0, 255, 128]),
         };
-        let png = encode_png(&rgba).unwrap();
+        let png = encode_png(rgba.clone()).unwrap();
         let back = decode_rgba(&Image::from_bytes(ImageFormat::Png, png)).unwrap();
         assert_eq!((back.width, back.height), (2, 1));
         assert_eq!(back.bytes, rgba.bytes);
+    }
+}
+
+#[cfg(test)]
+mod perf {
+    use super::*;
+
+    /// Benchmarks the PNG encode a clipboard image paste runs on the main
+    /// thread: `cargo test --release --lib bench_encode_png -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_encode_png() {
+        let (width, height) = (3840usize, 2160usize);
+        let pixel = |f: &dyn Fn(usize, usize, usize) -> u8| -> Vec<u8> {
+            (0..width * height * 4)
+                .map(|i| f((i / 4) % width, (i / 4) / width, i % 4))
+                .collect()
+        };
+        // Screenshot-like: flat panels with a few noisy rows (text).
+        let screenshot = pixel(&|x, y, c| {
+            if y % 40 < 3 {
+                ((x * 7 + y * 13 + c * 31) % 251) as u8
+            } else {
+                ((x / 200) * 37 + (y / 300) * 11 + c * 5) as u8
+            }
+        });
+        // Photo-like: smooth gradients with per-pixel noise.
+        let photo = pixel(&|x, y, c| {
+            let noise = (x.wrapping_mul(2654435761) ^ y.wrapping_mul(40503) ^ c) % 17;
+            ((x * 255 / width + y * 255 / height) / 2 + noise) as u8
+        });
+        for (name, bytes) in [("screenshot", screenshot), ("photo", photo)] {
+            let mut times = Vec::new();
+            let mut size = 0;
+            for _ in 0..11 {
+                let image = arboard::ImageData {
+                    width,
+                    height,
+                    bytes: Cow::Owned(bytes.clone()),
+                };
+                let start = std::time::Instant::now();
+                size = encode_png(image).unwrap().len();
+                times.push(start.elapsed());
+            }
+            times.sort();
+            println!(
+                "bench: encode 4K {name}: median {:.1} ms, min {:.1} ms, {:.2} MB",
+                times[5].as_secs_f64() * 1e3,
+                times[0].as_secs_f64() * 1e3,
+                size as f64 / 1e6
+            );
+        }
     }
 }
