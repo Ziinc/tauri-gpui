@@ -112,7 +112,7 @@ Everything else does one of three things:
 |---|---|
 | Linux (X11) | Verified end to end by the screenshot test below (Xvfb, Mesa lavapipe Vulkan). |
 | Linux (Wayland) | Builds. TAO hands out Wayland handles, but the GTK subsurface interaction has not been tested. |
-| macOS, Windows | Implemented against the same cross-platform APIs but **not yet built or run**. On Windows, `tauri-runtime-wry` paints window-only windows with softbuffer, which may conflict with the DX12 swapchain. |
+| macOS, Windows | Implemented against the same cross-platform APIs. CI builds them and runs the unit tests (clippy, `cargo test --lib`), but **they have not been run against a real window yet**. On Windows, `tauri-runtime-wry` paints window-only windows with softbuffer, which may conflict with the DX12 swapchain. |
 | Android (`mobile` feature) | Builds for `aarch64`/`x86_64`. CI drives [`examples/android-demo`](examples/android-demo) on an emulator (taps, scrolling, soft keyboard, background and resume). See [Android](#android). |
 | iOS (`mobile` feature) | Builds for `aarch64-apple-ios` and the simulator. CI runs [`examples/ios-demo`](examples/ios-demo) on an iPhone simulator (rendering, safe area, dark mode, background and resume, keyboard inset animation). Not yet run on a physical device. See [iOS](#ios). |
 
