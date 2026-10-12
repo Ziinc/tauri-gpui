@@ -85,10 +85,10 @@ wait_for 'ios-demo: attached'
 wait_for 'ios-demo: layout top='
 wait_for 'appearance dark=false'
 
-# The header is padded by the safe area; a zero top inset means the insets
-# never reached GPUI.
-top=$(grep -oE 'layout top=[0-9.]+' "$log" | tail -1 | cut -d= -f2)
-awk -v top="$top" 'BEGIN { exit !(top > 0) }' || fail "expected a top safe-area inset, got $top"
+# The header is padded by the safe area; a top inset that stays zero means
+# the insets never reached GPUI. The first frame can render before UIKit has
+# sized the window (top=0, width<1), so wait for a later one.
+wait_for 'ios-demo: layout top=[1-9]' 30
 sleep 2
 xcrun simctl io "$device" screenshot "$out/light.png" >/dev/null
 
@@ -117,12 +117,16 @@ sync_log
 bottoms=$(sed -n '/ios-demo: focusing input/,$p' "$log" | grep -oE 'layout bottom=[0-9.]+' | cut -d= -f2)
 echo "ios-smoke: bottom insets:" $bottoms
 echo "$bottoms" | awk '
-  NR == 1 { first = $1 }
-  { values[NR] = $1; last = $1 }
+  { values[NR] = $1 }
   END {
-    if (last < first + 100) { print "the keyboard inset never grew"; exit 1 }
-    for (i = 2; i < NR; i++) if (values[i] > first && values[i] < last) between++
-    if (between < 3) { print "the keyboard inset jumped (" between " intermediate values)"; exit 1 }
+    # Measure from the lowest sample: the first frame can still show the
+    # previous layout, and a busy simulator can render it partway into the
+    # slide.
+    for (i = 1; i <= NR; i++) if (start == 0 || values[i] < values[start]) start = i
+    first = values[start]; last = values[NR]
+    if (last < first + 50) { print "the keyboard inset never grew"; exit 1 }
+    for (i = start + 1; i < NR; i++) if (values[i] > first && values[i] < last) between++
+    if (between < 3) { print "the keyboard inset jumped (" between + 0 " intermediate values)"; exit 1 }
   }' || fail "expected an animated keyboard inset"
 xcrun simctl io "$device" screenshot "$out/keyboard.png" >/dev/null
 

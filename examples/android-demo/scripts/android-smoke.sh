@@ -70,6 +70,33 @@ ui_has() {
   return 1
 }
 # wait_for <regex> <timeout seconds>
+# ime_shown_count prints how often the soft keyboard has been shown for the app.
+ime_shown_count() {
+  adb logcat -d -s ImeTracker:I | grep -c 'dev.taurigpui.androiddemo:[0-9a-f]*: onShown' || true
+}
+
+# ime_shown_since <count> <secs> waits until the keyboard is shown again.
+ime_shown_since() {
+  local deadline=$((SECONDS + $2))
+  while (( SECONDS < deadline )); do
+    if (( $(ime_shown_count) > $1 )); then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
+# scroll_settled <secs> waits until no new scroll offset is logged for 2 s.
+scroll_settled() {
+  local deadline=$((SECONDS + $1)) last=-1 now
+  while (( SECONDS < deadline )); do
+    now=$(adb logcat -d -s android-demo:I | grep -c 'scrolled offset=' || true)
+    if (( now == last )); then return 0; fi
+    last=$now
+    sleep 2
+  done
+  return 1
+}
+
 wait_for() {
   local deadline=$((SECONDS + $2))
   while (( SECONDS < deadline )); do
@@ -113,10 +140,19 @@ adb shell input swipe "$x" $((screen_h * 85 / 100)) "$x" $((screen_h * 50 / 100)
 sleep 2
 shot 03-scrolled
 
-# Soft keyboard and text input.
+# Soft keyboard and text input. A tap while the fling is still moving only
+# stops the scroll, so wait for it to settle; and wait for the keyboard
+# before typing, since keys sent before it is up are dropped.
 dismiss_dialogs
+scroll_settled 20 || echo "NOTE: the list was still scrolling after 20 s"
+shown=$(ime_shown_count)
 adb shell input tap "$x" "$input_y"
-sleep 2
+if ! ime_shown_since "$shown" 10; then
+  echo "NOTE: no soft keyboard 10 s after tapping the input; tapping again"
+  adb shell input tap "$x" "$input_y"
+  ime_shown_since "$shown" 20 || echo "NOTE: the soft keyboard was not shown"
+fi
+sleep 1
 shot 04-keyboard
 adb shell input text "hello"
 adb shell input keyevent 66
