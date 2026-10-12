@@ -419,10 +419,6 @@ impl HasDisplayHandle for TauriGpuiWindow {
     }
 }
 
-fn unsupported(operation: &str) {
-    log::debug!("tauri-plugin-gpui: `{operation}` is not supported by the minimal GPUI adapter");
-}
-
 impl PlatformWindow for TauriGpuiWindow {
     fn bounds(&self) -> Bounds<Pixels> {
         Bounds::new(self.inner.state.borrow().origin, self.inner.logical_size())
@@ -538,7 +534,7 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn set_background_appearance(&self, _background_appearance: WindowBackgroundAppearance) {
-        unsupported("set_background_appearance");
+        super::log_unsupported("set_background_appearance");
     }
 
     fn minimize(&self) {
@@ -695,7 +691,7 @@ impl PlatformWindow for TauriGpuiWindow {
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
         // Tauri exposes no IME candidate-window positioning API.
-        unsupported("update_ime_position");
+        super::log_unsupported("update_ime_position");
     }
 
     #[cfg(gpui_mobile)]

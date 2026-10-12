@@ -570,30 +570,31 @@ impl Runtime {
                 // belongs to the previously hovered one.
                 self.platform.cursor.reset();
             }
-            WindowEvent::CursorLeft { .. } => {
-                let mut hovered = self.platform.hovered_window.borrow_mut();
-                if hovered.as_ref().is_some_and(|w| w.label() == inner.label) {
-                    *hovered = None;
-                }
-            }
+            WindowEvent::CursorLeft { .. } => self.unhover(inner),
             WindowEvent::Focused(true) => self.platform.active_window.set(inner.gpui_handle.get()),
-            WindowEvent::Focused(false)
-                if self.platform.active_window.get() == inner.gpui_handle.get() =>
-            {
-                self.platform.active_window.set(None);
-            }
+            WindowEvent::Focused(false) => self.deactivate(inner),
             _ => {}
         }
     }
 
-    fn forget_platform_refs(&self, inner: &WindowInner) {
+    /// Clears the platform's hovered window if it is `inner`.
+    fn unhover(&self, inner: &WindowInner) {
         let mut hovered = self.platform.hovered_window.borrow_mut();
         if hovered.as_ref().is_some_and(|w| w.label() == inner.label) {
             *hovered = None;
         }
+    }
+
+    /// Clears the platform's active window if it is `inner`.
+    fn deactivate(&self, inner: &WindowInner) {
         if self.platform.active_window.get() == inner.gpui_handle.get() {
             self.platform.active_window.set(None);
         }
+    }
+
+    fn forget_platform_refs(&self, inner: &WindowInner) {
+        self.unhover(inner);
+        self.deactivate(inner);
     }
 
     /// Runs queued GPUI work, finishes deferred attachments and delivers
