@@ -177,29 +177,50 @@ mod tests {
 mod perf {
     use super::*;
 
-    /// `cargo test --release --lib clipboard_png_timing -- --ignored --nocapture`
+    /// Benchmarks the PNG encode a clipboard image paste runs on the main
+    /// thread: `cargo test --release --lib bench_encode_png -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn clipboard_png_timing() {
-        let (width, height) = (3840, 2160);
-        // Screenshot-like: flat panels with some noisy rows.
-        let bytes: Vec<u8> = (0..width * height * 4)
-            .map(|i| {
-                let (x, y) = ((i / 4) % width, (i / 4) / width);
-                if y % 40 < 3 {
-                    (i % 251) as u8
-                } else {
-                    ((x / 200) * 37 + (y / 300) * 11) as u8
-                }
-            })
-            .collect();
-        let image = arboard::ImageData {
-            width,
-            height,
-            bytes: Cow::Owned(bytes),
+    fn bench_encode_png() {
+        let (width, height) = (3840usize, 2160usize);
+        let pixel = |f: &dyn Fn(usize, usize, usize) -> u8| -> Vec<u8> {
+            (0..width * height * 4)
+                .map(|i| f((i / 4) % width, (i / 4) / width, i % 4))
+                .collect()
         };
-        let start = std::time::Instant::now();
-        let png = encode_png(image).unwrap();
-        println!("encode 4K: {:?}, {} bytes", start.elapsed(), png.len());
+        // Screenshot-like: flat panels with a few noisy rows (text).
+        let screenshot = pixel(&|x, y, c| {
+            if y % 40 < 3 {
+                ((x * 7 + y * 13 + c * 31) % 251) as u8
+            } else {
+                ((x / 200) * 37 + (y / 300) * 11 + c * 5) as u8
+            }
+        });
+        // Photo-like: smooth gradients with per-pixel noise.
+        let photo = pixel(&|x, y, c| {
+            let noise = (x.wrapping_mul(2654435761) ^ y.wrapping_mul(40503) ^ c) % 17;
+            ((x * 255 / width + y * 255 / height) / 2 + noise) as u8
+        });
+        for (name, bytes) in [("screenshot", screenshot), ("photo", photo)] {
+            let mut times = Vec::new();
+            let mut size = 0;
+            for _ in 0..11 {
+                let image = arboard::ImageData {
+                    width,
+                    height,
+                    bytes: Cow::Owned(bytes.clone()),
+                };
+                let start = std::time::Instant::now();
+                size = encode_png(image).unwrap().len();
+                times.push(start.elapsed());
+            }
+            times.sort();
+            println!(
+                "bench: encode 4K {name}: median {:.1} ms, min {:.1} ms, {:.2} MB",
+                times[5].as_secs_f64() * 1e3,
+                times[0].as_secs_f64() * 1e3,
+                size as f64 / 1e6
+            );
+        }
     }
 }
