@@ -85,10 +85,10 @@ wait_for 'ios-demo: attached'
 wait_for 'ios-demo: layout top='
 wait_for 'appearance dark=false'
 
-# The header is padded by the safe area; a zero top inset means the insets
-# never reached GPUI.
-top=$(grep -oE 'layout top=[0-9.]+' "$log" | tail -1 | cut -d= -f2)
-awk -v top="$top" 'BEGIN { exit !(top > 0) }' || fail "expected a top safe-area inset, got $top"
+# The header is padded by the safe area; a top inset that stays zero means
+# the insets never reached GPUI. The first frame can render before UIKit has
+# sized the window (top=0, width<1), so wait for a later one.
+wait_for 'ios-demo: layout top=[1-9]' 30
 sleep 2
 xcrun simctl io "$device" screenshot "$out/light.png" >/dev/null
 
