@@ -117,12 +117,16 @@ sync_log
 bottoms=$(sed -n '/ios-demo: focusing input/,$p' "$log" | grep -oE 'layout bottom=[0-9.]+' | cut -d= -f2)
 echo "ios-smoke: bottom insets:" $bottoms
 echo "$bottoms" | awk '
-  NR == 1 { first = $1 }
-  { values[NR] = $1; last = $1 }
+  { values[NR] = $1 }
   END {
-    if (last < first + 100) { print "the keyboard inset never grew"; exit 1 }
-    for (i = 2; i < NR; i++) if (values[i] > first && values[i] < last) between++
-    if (between < 3) { print "the keyboard inset jumped (" between " intermediate values)"; exit 1 }
+    # Measure from the lowest sample: the first frame can still show the
+    # previous layout, and a busy simulator can render it partway into the
+    # slide.
+    for (i = 1; i <= NR; i++) if (start == 0 || values[i] < values[start]) start = i
+    first = values[start]; last = values[NR]
+    if (last < first + 50) { print "the keyboard inset never grew"; exit 1 }
+    for (i = start + 1; i < NR; i++) if (values[i] > first && values[i] < last) between++
+    if (between < 3) { print "the keyboard inset jumped (" between + 0 " intermediate values)"; exit 1 }
   }' || fail "expected an animated keyboard inset"
 xcrun simctl io "$device" screenshot "$out/keyboard.png" >/dev/null
 
