@@ -359,6 +359,8 @@ impl Runtime {
             callbacks: RefCell::default(),
             frame_pending: Cell::new(false),
             force_present: Cell::new(false),
+            mode_dirty: Cell::new(true),
+            display_dirty: Cell::new(true),
             reported_visible: Cell::new(true),
             sprite_atlas,
             closed: Cell::new(false),
@@ -545,7 +547,6 @@ impl Runtime {
                 // even if GPUI has nothing new to render.
                 if let Some(inner) = self.surface_for(*window_id, context) {
                     // Exposure also follows a restore TAO has no event for.
-                    let _guard = self.enter();
                     inner.window_mode_changed();
                     inner.force_present.set(true);
                     inner.schedule_frame();
@@ -651,6 +652,7 @@ impl Runtime {
                     continue;
                 }
                 surface.flush_ime_commit();
+                surface.refresh_window_mode();
                 // GPUI is told hidden windows get no frames; keep the request
                 // pending until the window is visible again.
                 if frames_allowed && surface.reported_visible.get() && surface.frame_pending.take()

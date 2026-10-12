@@ -124,6 +124,11 @@ pub(crate) struct WindowInner {
     pub callbacks: RefCell<Callbacks>,
     pub frame_pending: Cell<bool>,
     pub force_present: Cell<bool>,
+    /// Maximized/fullscreen/visible may have changed; TAO has no events for
+    /// them, so they are re-read (lazily, at most once per change) from Tauri.
+    pub mode_dirty: Cell<bool>,
+    /// The window may be on another monitor.
+    pub display_dirty: Cell<bool>,
     /// Visibility as last reported to GPUI.
     pub reported_visible: Cell<bool>,
     /// Kept outside the renderer so GPUI can still ask for it after the
@@ -303,17 +308,35 @@ impl WindowInner {
         click.count
     }
 
-    /// Re-reads window modes TAO reports no dedicated event for, and the
-    /// monitor. Maximizing, fullscreen, minimizing and restoring always
-    /// resize, move, change focus or expose the window, so this runs then.
+    /// Marks maximized/fullscreen/visibility and the monitor for a re-read.
+    pub fn window_mode_changed(&self) {
+        self.mode_dirty.set(true);
+        self.window_moved();
+    }
+
+    /// Marks the monitor for a re-read: moving changes nothing else.
+    pub fn window_moved(&self) {
+        self.display_dirty.set(true);
+        self.waker.wake();
+    }
+
+    /// Re-reads window modes TAO reports no dedicated event for, if an event
+    /// that can change them arrived since the last read. Each read is a
+    /// synchronous round trip through the Tauri runtime, so resize and move
+    /// storms are coalesced into one read.
     pub fn sync_window_mode(&self) {
         let window = &self.tauri_window;
-        let display = window
-            .current_monitor()
-            .ok()
-            .flatten()
-            .map(|monitor| super::TauriDisplay::from_monitor(&monitor));
-        *self.display.borrow_mut() = display;
+        if self.display_dirty.take() {
+            let display = window
+                .current_monitor()
+                .ok()
+                .flatten()
+                .map(|monitor| super::TauriDisplay::from_monitor(&monitor));
+            *self.display.borrow_mut() = display;
+        }
+        if !self.mode_dirty.take() {
+            return;
+        }
         let maximized = window.is_maximized().unwrap_or(false);
         let fullscreen = window.is_fullscreen().unwrap_or(false);
         let mut state = self.state.borrow_mut();
@@ -328,8 +351,9 @@ impl WindowInner {
         }
     }
 
-    /// Re-reads the window mode and tells GPUI what changed.
-    pub fn window_mode_changed(&self) {
+    /// Applies a pending window-mode change and tells GPUI when visibility
+    /// changed since it was last told.
+    pub fn refresh_window_mode(&self) {
         let display_id = |inner: &Self| inner.display.borrow().as_ref().map(|d| d.id());
         let old_display = display_id(self);
         self.sync_window_mode();
@@ -492,10 +516,12 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn is_maximized(&self) -> bool {
+        self.inner.sync_window_mode();
         self.inner.state.borrow().maximized
     }
 
     fn window_bounds(&self) -> WindowBounds {
+        self.inner.sync_window_mode();
         let state = self.inner.state.borrow();
         let bounds = Bounds::new(
             state.origin,
@@ -531,6 +557,8 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
+        // Not synced here: GPUI asks on every resize/move, and the drain
+        // refreshes it (and re-notifies GPUI) once per event-loop iteration.
         self.inner.display.borrow().clone()
     }
 
@@ -644,6 +672,7 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn is_fullscreen(&self) -> bool {
+        self.inner.sync_window_mode();
         self.inner.state.borrow().fullscreen
     }
 

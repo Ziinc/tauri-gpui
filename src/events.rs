@@ -42,7 +42,7 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             );
         }
         WindowEvent::Moved(position) => {
-            inner.window_mode_changed();
+            inner.window_moved();
             {
                 let mut state = inner.state.borrow_mut();
                 let scale = state.scale_factor;
