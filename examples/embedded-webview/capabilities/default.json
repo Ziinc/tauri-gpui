@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "windows": ["*"],
+  "webviews": ["*"],
+  "permissions": ["core:default"]
+}
