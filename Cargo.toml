@@ -54,7 +54,7 @@ tauri-runtime-wry = { version = "2.12", features = ["unstable"] }
 gpui = { package = "gpui-pre", version = "=0.3.8", default-features = false }
 
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
-arboard = { version = "3", default-features = false, features = ["image-data"] }
+arboard = { version = "3", default-features = false, features = ["image-data", "wayland-data-control"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico", "pnm"] }
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 
@@ -65,6 +65,11 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8", features = ["font-k
 gtk = "0.18"
 gdkx11 = "0.18"
 x11-dl = "2.21"
+# GPUI's own sub-surface on Wayland (`src/platform/wayland.rs`), on GDK's
+# display connection. Same versions as TAO's and arboard's.
+gdkwayland-sys = "0.18"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
 # Screen readers over AT-SPI (`src/platform/a11y.rs`); the version GPUI's
 # own Linux platform uses with its `accesskit` 0.24.
 accesskit_unix = "0.22"

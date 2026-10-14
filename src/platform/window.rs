@@ -156,12 +156,26 @@ pub(crate) struct WindowInner {
     /// The window moved or resized since the accessibility adapter was told.
     #[cfg(not(gpui_mobile))]
     pub a11y_bounds_dirty: Cell<bool>,
+    /// GPUI's sub-surface; `None` off Wayland. Declared after `state` so the
+    /// renderer presenting to it is dropped first.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    pub wayland: Option<super::wayland::Content>,
 }
 
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 const DOUBLE_CLICK_DISTANCE: f32 = 4.0;
 
 impl WindowInner {
+    /// Where GPUI's content starts in the coordinates GTK reports pointer and
+    /// drag positions in: below the client-side decorations on Wayland.
+    pub fn content_origin(&self) -> Point<Pixels> {
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(content) = &self.wayland {
+            return content.origin();
+        }
+        Point::default()
+    }
+
     pub fn logical_size(&self) -> Size<Pixels> {
         let state = self.state.borrow();
         logical(state.physical_size, state.scale_factor)
@@ -473,6 +487,11 @@ impl WindowInner {
         #[cfg(not(gpui_mobile))]
         {
             state.visible = !window.is_minimized().unwrap_or(false);
+        }
+        // Except on Wayland, where GTK's unmap takes GPUI's surface away.
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(content) = &self.wayland {
+            state.visible &= content.is_attached();
         }
     }
 
@@ -917,7 +936,10 @@ impl PlatformWindow for TauriGpuiWindow {
     fn update_ime_position(&self, bounds: Bounds<Pixels>) {
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         if let Some(ime) = &self.inner.ime {
-            ime.set_cursor(bounds);
+            ime.set_cursor(Bounds::new(
+                bounds.origin + self.inner.content_origin(),
+                bounds.size,
+            ));
         }
         #[cfg(target_os = "windows")]
         super::ime::windows::set_position(

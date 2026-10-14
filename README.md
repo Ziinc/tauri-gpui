@@ -176,7 +176,7 @@ div().flex_1().child(tauri_plugin_gpui::webview_frame(&reports))
 | Target | Status |
 |---|---|
 | Linux (X11) | Verified end to end by the screenshot test below (Xvfb, Mesa lavapipe Vulkan). |
-| Linux (Wayland) | Builds. TAO hands out Wayland handles, but the GTK subsurface interaction has not been tested. |
+| Linux (Wayland) | GPUI renders into its own `wl_subsurface` over the window's content area, so GTK's client-side decorations stay visible, hiding and showing the window is safe, and GPUI gets the content size (TAO's `inner_size` includes the decorations there). CI runs the chaos suite on headless Weston; checks that need a seat (input, focus, clipboard, file drops) skip there and are untested on a real compositor. |
 | macOS, Windows | Implemented against the same cross-platform APIs. CI builds them and runs the unit tests (clippy, `cargo test --lib`), but **they have not been run against a real window yet**. On Windows, `tauri-runtime-wry` paints window-only windows with softbuffer, which may conflict with the DX12 swapchain. |
 | Android (`mobile` feature) | Builds for `aarch64`/`x86_64`. CI drives [`examples/android-demo`](examples/android-demo) on an emulator (taps, scrolling, soft keyboard, background and resume). See [Android](#android). |
 | iOS (`mobile` feature) | Builds for `aarch64-apple-ios` and the simulator. CI runs [`examples/ios-demo`](examples/ios-demo) on an iPhone simulator (rendering, safe area, dark mode, background and resume, keyboard inset animation). Not yet run on a physical device. See [iOS](#ios). |
@@ -308,6 +308,8 @@ With `GPUI_DEMO_AUTOTEST=<dir>` set, the demo:
 # needs: Xvfb, openbox, xdotool, a Vulkan driver; prints its seed
 scripts/chaos-test.sh
 CHAOS_SEED=42 CHAOS_ONLY=lifecycle_storm,clipboard scripts/chaos-test.sh
+# GTK's Wayland backend on headless Weston (needs: weston)
+scripts/chaos-test.sh --wayland
 ```
 
 `CHAOS_ONLY=ime_pinyin` types pinyin through a real IBus engine and is not part of the default run: start `ibus-daemon`, select `ibus engine libpinyin` and set `GTK_IM_MODULE=ibus` first.

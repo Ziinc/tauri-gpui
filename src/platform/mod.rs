@@ -17,6 +17,8 @@ pub(crate) mod file_drop;
 pub(crate) mod ime;
 mod queue;
 pub(crate) mod typed_text;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub(crate) mod wayland;
 pub(crate) mod window;
 
 use std::{

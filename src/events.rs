@@ -28,6 +28,12 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
     match event {
         WindowEvent::Resized(physical) => {
             inner.window_mode_changed();
+            // TAO's size includes the decorations there; the sub-surface
+            // follows GTK's content allocation instead.
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            if inner.wayland.is_some() {
+                return false;
+            }
             let scale = inner.state.borrow().scale_factor;
             inner.resized(physical_size(physical.width, physical.height), scale);
         }
@@ -36,6 +42,11 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             new_inner_size,
         } => {
             inner.window_mode_changed();
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            if let Some(content) = &inner.wayland {
+                content.rescale(inner, *scale_factor);
+                return false;
+            }
             inner.resized(
                 physical_size(new_inner_size.width, new_inner_size.height),
                 *scale_factor as f32,
@@ -85,7 +96,8 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
         WindowEvent::CursorMoved { position, .. } => {
             let (position, pressed_button, modifiers) = {
                 let mut state = inner.state.borrow_mut();
-                state.mouse_position = logical_position(*position, state.scale_factor);
+                state.mouse_position =
+                    logical_position(*position, state.scale_factor) - inner.content_origin();
                 (state.mouse_position, state.pressed_button, state.modifiers)
             };
             inner.handle_input(PlatformInput::MouseMove(MouseMoveEvent {

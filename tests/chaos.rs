@@ -539,6 +539,12 @@ fn xdotool(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// GTK is on a Wayland display rather than X11.
+fn wayland() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && std::env::var("GDK_BACKEND").map_or(true, |backend| backend.starts_with("wayland"))
+}
+
 fn wm_running() -> bool {
     xdotool(&["get_desktop"]).is_ok()
 }
@@ -840,6 +846,7 @@ fn resize_storm(h: &mut Harness) {
         }
     }
     let l = label.clone();
+    let mut tauri = (0., 0.);
     let settled = h.wait(Duration::from_secs(5), |h| {
         let (tauri_size, scale) = {
             let l = l.clone();
@@ -853,14 +860,20 @@ fn resize_storm(h: &mut Harness) {
             (tauri_size.width as f64 / scale) as f32,
             (tauri_size.height as f64 / scale) as f32,
         );
-        h.seen(&l).is_some_and(|s| s.viewport == expected)
-            && expected == (last.0 as f32, last.1 as f32)
+        tauri = expected;
+        let requested = (last.0 as f32, last.1 as f32);
+        // TAO's inner size includes GTK's client-side decorations on
+        // Wayland; GPUI gets the content area, which is what was requested.
+        if wayland() {
+            return h.seen(&l).is_some_and(|s| s.viewport == requested);
+        }
+        h.seen(&l).is_some_and(|s| s.viewport == expected) && expected == requested
     });
     let seen = h.seen(&label).unwrap_or_default();
     h.check(
         "GPUI viewport matches the final Tauri size",
         settled,
-        format!("final {last:?}, GPUI {:?}", seen.viewport),
+        format!("final {last:?}, Tauri {tauri:?}, GPUI {:?}", seen.viewport),
     );
     h.close(&label);
     h.window_gone(&label);
@@ -1252,7 +1265,23 @@ fn clipboard(h: &mut Harness) {
     let label = h.open_probe("clip", (300., 200.));
     h.rendered(&label);
 
-    h.main(|app| app.clipboard().write_text("from tauri").unwrap());
+    // Headless compositors have no seat, so neither a Wayland clipboard nor
+    // (without Xwayland) an X11 one to fall back to.
+    let written = h.main(|app| {
+        app.clipboard()
+            .write_text("from tauri")
+            .map_err(|e| e.to_string())
+    });
+    if let Err(error) = written {
+        h.check(
+            "clipboard checks",
+            true,
+            format!("skipped: no system clipboard ({error})"),
+        );
+        h.close(&label);
+        h.window_gone(&label);
+        return;
+    }
     let read = h.gpui(|cx| cx.read_from_clipboard().and_then(|i| i.text()));
     h.check(
         "GPUI reads text written by tauri-plugin-clipboard-manager",
