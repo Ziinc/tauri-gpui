@@ -4,10 +4,13 @@
 //! the candidate window from a Tauri window. Where the native API is
 //! reachable from the window's handles, the plugin talks to the input method
 //! itself: on Linux a GTK input method context composes into GPUI's input
-//! handler (`linux`).
+//! handler (`linux`), and on Windows the IMM32 composition and candidate
+//! windows follow GPUI's caret (`windows`).
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) mod linux;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows;
 
 use gpui::{Bounds, Pixels};
 
@@ -75,7 +78,10 @@ pub(crate) fn utf16_offset(text: &str, chars: usize) -> usize {
 /// `bounds` (logical, window-relative) scaled by `scale` and rounded to whole
 /// pixels: `[left, top, right, bottom]`. Never empty, so a zero-width caret
 /// still has an area to place the candidate window against.
-#[cfg_attr(not(any(target_os = "linux", target_os = "freebsd")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "freebsd", target_os = "windows")),
+    allow(dead_code)
+)]
 pub(crate) fn pixel_rect(bounds: Bounds<Pixels>, scale: f32) -> [i32; 4] {
     let scaled = |value: Pixels| (f32::from(value) * scale).round() as i32;
     let (left, top) = (scaled(bounds.origin.x), scaled(bounds.origin.y));

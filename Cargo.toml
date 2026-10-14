@@ -83,7 +83,8 @@ block2 = { version = "0.6", optional = true }
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation"] }
+# `Win32_UI_Input_Ime`: placing the IME windows at GPUI's caret.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_Input_Ime"] }
 
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }

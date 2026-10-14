@@ -856,8 +856,17 @@ impl PlatformWindow for TauriGpuiWindow {
         if let Some(ime) = &self.inner.ime {
             ime.set_cursor(bounds);
         }
-        // Tauri exposes no IME candidate-window positioning API.
-        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+        #[cfg(target_os = "windows")]
+        super::ime::windows::set_position(
+            self.get_raw_handle(),
+            super::ime::pixel_rect(bounds, self.inner.state.borrow().scale_factor),
+        );
+        // TAO's macOS view answers `firstRectForCharacterRange:` from a spot
+        // only `tao::Window::set_ime_position` sets, and tauri-runtime-wry
+        // keeps the TAO window private, so the candidate window stays where
+        // TAO puts it by default (the window's top-left corner). Mobile
+        // keyboards query the input view instead.
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "windows")))]
         {
             let _ = bounds;
             super::log_unsupported("update_ime_position");
