@@ -9,8 +9,8 @@ use std::{
 };
 
 use gpui::{
-    AppLifecyclePhase, Edges, KeyDownEvent, KeyUpEvent, PlatformInput, PlatformTextSystem,
-    TouchPhase, WindowAppearance, WindowInsets, px,
+    AppLifecyclePhase, Edges, KeyDownEvent, KeyUpEvent, PlatformInput, PlatformInputHandler,
+    PlatformTextSystem, TouchPhase, WindowAppearance, WindowInsets, px,
 };
 use gpui_wgpu::{WgpuContext, wgpu};
 use raw_window_handle::RawWindowHandle;
@@ -21,7 +21,7 @@ use super::{OpenWindow, Runtime};
 use crate::{
     GpuiError, GpuiOptions,
     events::mobile,
-    ios::{ViewEvent, keys::HardwareKey},
+    ios::{ViewEvent, keys::HardwareKey, text::TextEdit},
     platform::window::{RawWindow, WindowInner},
 };
 
@@ -154,6 +154,25 @@ impl Runtime {
         self.surfaces.borrow().values().next().cloned()
     }
 
+    /// Runs `f` on the focused text input's handler for UIKit, after applying
+    /// queued input view events so it sees every earlier edit. `None` while
+    /// GPUI is updating (UIKit asking from inside a GPUI call); `Some(None)`
+    /// when nothing has focus.
+    pub(crate) fn ios_input_handler<R>(
+        &self,
+        f: impl FnOnce(&mut PlatformInputHandler) -> R,
+    ) -> Option<Option<R>> {
+        if self.depth.get() > 0 {
+            return None;
+        }
+        self.pump_ios();
+        let Some(inner) = self.attached() else {
+            return Some(None);
+        };
+        let _guard = self.enter();
+        Some(inner.input_handler(f))
+    }
+
     /// Applies queued input view events. Runs at the start of every drain.
     pub(super) fn pump_ios(&self) {
         let events = crate::ios::take_events();
@@ -218,14 +237,9 @@ impl Runtime {
                     inner.call_unit(|c| &mut c.appearance_changed);
                 }
             }
-            ViewEvent::InsertText(text) => {
+            ViewEvent::Text(edit) => {
                 if let Some(inner) = inner {
-                    mobile::commit_text(inner, &text);
-                }
-            }
-            ViewEvent::DeleteBackward => {
-                if let Some(inner) = inner {
-                    mobile::press(inner, mobile::named("backspace"));
+                    text_edit(inner, edit);
                 }
             }
             ViewEvent::Key {
@@ -293,6 +307,28 @@ impl Runtime {
                 false
             }
             _ => false,
+        }
+    }
+}
+
+fn text_edit(inner: &WindowInner, edit: TextEdit) {
+    match edit {
+        TextEdit::Insert(text) => mobile::commit_text(inner, &text),
+        TextEdit::DeleteBackward => mobile::press(inner, mobile::named("backspace")),
+        TextEdit::Mark { text, selected } => inner.with_input_handler(|handler| {
+            if text.is_empty() {
+                handler.replace_text_in_range(None, "");
+                handler.unmark_text();
+            } else {
+                handler.replace_and_mark_text_in_range(None, &text, Some(selected));
+            }
+        }),
+        TextEdit::Unmark => inner.with_input_handler(|handler| handler.unmark_text()),
+        TextEdit::Replace { range, text } => {
+            inner.with_input_handler(|handler| handler.replace_text_in_range(Some(range), &text))
+        }
+        TextEdit::Select(range) => {
+            inner.with_input_handler(|handler| handler.set_selected_text_range(range))
         }
     }
 }

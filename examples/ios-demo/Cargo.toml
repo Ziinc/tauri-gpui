@@ -25,3 +25,10 @@ gpui-kit = "0.7.1"
 log = "0.4"
 # Only here to turn on `debug-embed`, so gpui-kit's icons are compiled into debug builds (a phone cannot read the build machine's files).
 rust-embed = { version = "8.12", features = ["debug-embed"] }
+
+# `src/ime_check.rs` drives the plugin's input view like UIKit's keyboard.
+[target.'cfg(target_os = "ios")'.dependencies]
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-ui-kit = "0.3"
