@@ -5,6 +5,8 @@
 //! management, quitting) or explicitly reported as unsupported.
 
 #[cfg(not(gpui_mobile))]
+pub(crate) mod a11y;
+#[cfg(not(gpui_mobile))]
 pub(crate) mod clipboard;
 #[cfg(gpui_mobile)]
 #[path = "clipboard_mobile.rs"]

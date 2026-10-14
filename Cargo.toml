@@ -65,6 +65,9 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8", features = ["font-k
 gtk = "0.18"
 gdkx11 = "0.18"
 x11-dl = "2.21"
+# Screen readers over AT-SPI (`src/platform/a11y.rs`); the version GPUI's
+# own Linux platform uses with its `accesskit` 0.24.
+accesskit_unix = "0.22"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Same major version Tauri uses, so `run_on_android_context` hands us its JNIEnv.
@@ -82,9 +85,15 @@ objc2-quartz-core = { version = "0.3", optional = true }
 block2 = { version = "0.6", optional = true }
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.8" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# VoiceOver (`src/platform/a11y.rs`); the version GPUI's macOS platform uses.
+accesskit_macos = "0.26"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 # `Win32_UI_Input_Ime`: placing the IME windows at GPUI's caret.
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_Input_Ime"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_Input_Ime", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# UI Automation (`src/platform/a11y.rs`); the version GPUI's Windows platform uses.
+accesskit_windows = "0.34"
 
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }

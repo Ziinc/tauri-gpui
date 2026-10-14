@@ -62,6 +62,8 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
                 ime.set_active(*focused);
             }
             inner.call_bool(|c| &mut c.active_status_change, *focused);
+            #[cfg(not(gpui_mobile))]
+            inner.set_a11y_focused(*focused);
         }
         WindowEvent::CursorEntered { .. } => {
             inner.state.borrow_mut().hovered = true;

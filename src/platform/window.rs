@@ -150,6 +150,12 @@ pub(crate) struct WindowInner {
     /// The system input method; `None` when GTK could not provide one.
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     pub ime: Option<super::ime::linux::Ime>,
+    /// Created by GPUI's `a11y_init` unless accessibility is disabled.
+    #[cfg(not(gpui_mobile))]
+    pub a11y: RefCell<Option<super::a11y::A11yAdapter>>,
+    /// The window moved or resized since the accessibility adapter was told.
+    #[cfg(not(gpui_mobile))]
+    pub a11y_bounds_dirty: Cell<bool>,
 }
 
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
@@ -385,7 +391,58 @@ impl WindowInner {
     /// Marks the monitor for a re-read: moving changes nothing else.
     pub fn window_moved(&self) {
         self.display_dirty.set(true);
+        #[cfg(not(gpui_mobile))]
+        self.a11y_bounds_dirty.set(true);
         self.waker.wake();
+    }
+
+    /// Gives the accessibility adapter the window's screen rectangles if it
+    /// moved or resized since the last call. Like the window mode, they are
+    /// read from Tauri at most once per drain.
+    #[cfg(not(gpui_mobile))]
+    pub fn sync_a11y_bounds(&self) {
+        // Only AT-SPI asks the application where its window is.
+        if !cfg!(any(target_os = "linux", target_os = "freebsd")) || !self.a11y_bounds_dirty.take()
+        {
+            return;
+        }
+        let mut a11y = self.a11y.borrow_mut();
+        let Some(adapter) = a11y.as_mut() else {
+            return;
+        };
+        let window = &self.tauri_window;
+        let (Ok(outer_position), Ok(outer_size), Ok(inner_position), Ok(inner_size)) = (
+            window.outer_position(),
+            window.outer_size(),
+            window.inner_position(),
+            window.inner_size(),
+        ) else {
+            return;
+        };
+        let rect = |position: tauri::PhysicalPosition<i32>, size: tauri::PhysicalSize<u32>| {
+            gpui::accesskit::Rect {
+                x0: position.x as f64,
+                y0: position.y as f64,
+                x1: position.x as f64 + size.width as f64,
+                y1: position.y as f64 + size.height as f64,
+            }
+        };
+        adapter.set_bounds(
+            rect(outer_position, outer_size),
+            rect(inner_position, inner_size),
+        );
+    }
+
+    /// Tells the accessibility adapter whether the window has focus.
+    #[cfg(not(gpui_mobile))]
+    pub fn set_a11y_focused(&self, focused: bool) {
+        // Not while a tree update raises its events, should that ever pump
+        // a focus change.
+        if let Ok(mut a11y) = self.a11y.try_borrow_mut()
+            && let Some(adapter) = a11y.as_mut()
+        {
+            adapter.set_focused(focused);
+        }
     }
 
     /// Re-reads window modes TAO reports no dedicated event for, if an event
@@ -429,6 +486,8 @@ impl WindowInner {
             // GPUI re-reads the window's display on bounds changes.
             self.call_unit(|c| &mut c.moved);
         }
+        #[cfg(not(gpui_mobile))]
+        self.sync_a11y_bounds();
         self.report_visibility();
     }
 
@@ -521,6 +580,10 @@ impl WindowInner {
         if let Some(ime) = &self.ime {
             ime.shutdown();
         }
+        // Unhooks TAO's view or window procedure (macOS, Windows) and leaves
+        // the AT-SPI bus (Linux).
+        #[cfg(not(gpui_mobile))]
+        drop(self.a11y.borrow_mut().take());
         // Break reference cycles between GPUI closures and this window.
         let callbacks = std::mem::take(&mut *self.callbacks.borrow_mut());
         let handler = self.state.borrow_mut().input_handler.take();
@@ -939,6 +1002,30 @@ impl PlatformWindow for TauriGpuiWindow {
                 self.inner.text_input_changed(None);
             }
         }
+    }
+
+    #[cfg(not(gpui_mobile))]
+    fn a11y_init(&self, callbacks: gpui::A11yCallbacks) {
+        let focused = self.inner.state.borrow().active;
+        let adapter = super::a11y::A11yAdapter::new(self.inner.raw.get(), focused, callbacks);
+        *self.inner.a11y.borrow_mut() = adapter;
+        self.inner.a11y_bounds_dirty.set(true);
+        self.inner.sync_a11y_bounds();
+    }
+
+    #[cfg(not(gpui_mobile))]
+    fn a11y_tree_update(&self, tree_update: gpui::accesskit::TreeUpdate) {
+        if let Some(adapter) = self.inner.a11y.borrow_mut().as_mut() {
+            adapter.update(tree_update);
+        }
+    }
+
+    #[cfg(not(gpui_mobile))]
+    fn a11y_update_window_bounds(&self) {
+        // GPUI never calls this itself: the drain syncs the bounds after
+        // every move and resize.
+        self.inner.a11y_bounds_dirty.set(true);
+        self.inner.sync_a11y_bounds();
     }
 
     #[cfg(target_os = "windows")]

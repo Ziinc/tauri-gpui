@@ -16,8 +16,8 @@ use std::{
 };
 
 use gpui::{
-    AnyWindowHandle, App, Application, ApplicationHandle, AsyncApp, Bounds, QuitMode, WindowBounds,
-    WindowOptions,
+    AnyWindowHandle, App, Application, ApplicationHandle, AsyncApp, Bounds, QuitMode,
+    TitlebarOptions, WindowBounds, WindowOptions,
 };
 #[cfg(not(gpui_android))]
 use gpui::{point, px};
@@ -391,6 +391,10 @@ impl Runtime {
             file_drop: RefCell::default(),
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             ime: crate::platform::ime::linux::Ime::new(window, _weak.clone()),
+            #[cfg(not(gpui_mobile))]
+            a11y: RefCell::default(),
+            #[cfg(not(gpui_mobile))]
+            a11y_bounds_dirty: Cell::new(true),
         });
         #[cfg(all(not(gpui_mobile), any(target_os = "linux", target_os = "freebsd")))]
         crate::platform::file_drop::gtk::install(window, Rc::downgrade(&inner));
@@ -404,7 +408,11 @@ impl Runtime {
                 origin,
                 logical(physical_size, scale_factor),
             ))),
-            titlebar: None,
+            // GPUI only reads the title, as the accessible name of the window.
+            titlebar: Some(TitlebarOptions {
+                title: window.title().ok().map(Into::into),
+                ..Default::default()
+            }),
             focus: options.focus,
             show: false,
             ..Default::default()
