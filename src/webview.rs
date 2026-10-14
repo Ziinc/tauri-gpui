@@ -114,6 +114,20 @@ pub fn webview_frame(webview: &Webview<Wry>) -> WebviewFrame {
     }
 }
 
+/// Gives keyboard focus to `webview`, a child webview placed with
+/// [`webview_frame`], as clicking it would. Use it when a GPUI control opens
+/// something in the webview that expects typing, such as a search box.
+///
+/// Must be called on the main thread. On Linux the webview must be shown
+/// (painted in the last frame); elsewhere this is `Webview::set_focus`.
+pub fn focus_webview(webview: &Webview<Wry>) -> tauri::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    if linux::focus(webview.label()) {
+        return Ok(());
+    }
+    webview.set_focus()
+}
+
 /// The element returned by [`webview_frame`].
 pub struct WebviewFrame {
     id: ElementId,

@@ -170,7 +170,7 @@ div().flex_1().child(tauri_plugin_gpui::webview_frame(&reports))
 
 - The webview keeps Tauri IPC, so the web screen calls commands and listens to events as before. Shared state lives in Rust; GPUI reads it directly.
 - The webview is shown while its frame is painted and hidden in any frame that leaves it out, so switching GPUI screens needs no bookkeeping.
-- On Linux the webview is moved into its own X11 child window so it stacks above GPUI, and keyboard focus moves between the two on click. Hiding the webview while it has focus gives focus back to GPUI. Wayland is not supported.
+- On Linux the webview is moved into its own X11 child window so it stacks above GPUI, and keyboard focus moves between the two on click. Hiding the webview while it has focus gives focus back to GPUI. Wayland is not supported. `focus_webview` moves focus into a webview from code, for a GPUI control that opens something there to type into.
 - Tauri menu accelerators fire whether GPUI or the webview has keyboard focus. On Linux the webview's X11 window is a GTK window of its own, so the plugin attaches the Tauri window's accelerator groups to it.
 - The webview follows its frame through cached views (`AnyView::cached`), which reuse the previous frame without running the element again.
 - Render each webview in at most one frame. A webview created to replace a closed one needs a new label, because frames track webviews by label.
