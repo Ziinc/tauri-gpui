@@ -163,6 +163,9 @@ pub(crate) struct WindowInner {
     /// renderer presenting to it is dropped first.
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     pub wayland: Option<super::wayland::Content>,
+    /// GTK side of the window on X11 (`None` elsewhere, e.g. on Wayland).
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    pub x11: Option<super::x11::X11Window>,
 }
 
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
@@ -695,6 +698,12 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn resize(&mut self, size: Size<Pixels>) {
+        // GPUI's size excludes the menu bar on Linux; the window's includes it.
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        let size = Size {
+            height: size.height + px(self.inner.x11.as_ref().map_or(0., |x| x.chrome_height())),
+            ..size
+        };
         let size =
             tauri::LogicalSize::new(f32::from(size.width) as f64, f32::from(size.height) as f64);
         if let Err(error) = self.inner.tauri_window.set_size(size) {

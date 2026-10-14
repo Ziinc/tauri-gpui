@@ -4,6 +4,8 @@
 //! Drives the app from a background thread the way a user and the app
 //! itself would, only faster: screen switches, re-renders of the shell
 //! around the cached Reports pane, resizes, maximize, webview replacement.
+//! With a menu it also drives the GTK menu bar and its accelerators with
+//! real X11 input (`xdotool`), with GPUI and with the webview focused.
 //! After each step it saves a screenshot of the window and records what the
 //! content area must show in `checkpoints.json`; `scripts/check.py` verifies
 //! the pixels. Finally it destroys the window while the webview is shown.
@@ -23,11 +25,12 @@ use crate::{Counter, Screen, update_shell};
 /// Time for queued updates, frames and X11 to settle before a screenshot.
 const SETTLE: Duration = Duration::from_millis(900);
 
-pub fn spawn(app: AppHandle, dir: PathBuf) {
+pub fn spawn(app: AppHandle, dir: PathBuf, menu: bool) {
     std::thread::spawn(move || {
         let mut run = Run {
             app,
             dir,
+            menu,
             checkpoints: String::new(),
             seed: 0x2545_f491_4f6c_dd1d,
         };
@@ -38,6 +41,8 @@ pub fn spawn(app: AppHandle, dir: PathBuf) {
 struct Run {
     app: AppHandle,
     dir: PathBuf,
+    /// The window has a menu bar.
+    menu: bool,
     checkpoints: String,
     seed: u64,
 }
@@ -47,6 +52,9 @@ impl Run {
         // The page loads and the first frames are drawn.
         sleep(Duration::from_secs(4));
         self.checkpoint("initial", Screen::Reports);
+        if self.menu {
+            self.menu_scenario();
+        }
 
         for i in 0..200u32 {
             self.show(if i.is_multiple_of(2) {
@@ -124,6 +132,93 @@ impl Run {
         let _ = window.destroy();
     }
 
+    /// Real input through the menu bar, its accelerators and GPUI. Window
+    /// coordinates assume a GTK menu bar between 10 and 45 pixels high.
+    fn menu_scenario(&mut self) {
+        // Clicking the menu bar opens the View menu; its first item
+        // switches to the Overview.
+        self.click(20, 8);
+        sleep(SETTLE);
+        self.screenshot_popup("menu-open");
+        self.xdotool(&["key", "Down", "Return"]);
+        self.checkpoint("menu-item-activated", Screen::Overview);
+
+        // Accelerators with GPUI focused: click the empty sidebar first.
+        self.click(90, 400);
+        self.xdotool(&["key", "ctrl+2"]);
+        self.checkpoint("accelerator-gpui-focused", Screen::Reports);
+
+        // With the web screen focused by a click into the page.
+        self.click(600, 450);
+        self.xdotool(&["key", "ctrl+1"]);
+        self.checkpoint("accelerator-webview-focused", Screen::Overview);
+        // Hiding the webview gave keyboard focus back to GPUI.
+        self.xdotool(&["key", "ctrl+2"]);
+        self.checkpoint("accelerator-after-webview-hidden", Screen::Reports);
+
+        // GPUI's coordinates start below the menu bar: the Overview item
+        // is 54 to 96 GPUI pixels down, the Reports item 100 to 142.
+        self.click(60, 100);
+        self.checkpoint("clicked-overview-below-menu-bar", Screen::Overview);
+        self.click(60, 146);
+        self.checkpoint("clicked-reports-below-menu-bar", Screen::Reports);
+    }
+
+    /// Clicks at window coordinates (logical) with the X server's pointer.
+    fn click(&self, x: u32, y: u32) {
+        let xid = self.xid();
+        self.xdotool(&[
+            "mousemove",
+            "--window",
+            &xid,
+            &x.to_string(),
+            &y.to_string(),
+            "click",
+            "1",
+        ]);
+        sleep(Duration::from_millis(300));
+    }
+
+    fn xdotool(&self, args: &[&str]) {
+        let status = Command::new("xdotool")
+            .args(args)
+            .status()
+            .expect("xdotool");
+        assert!(status.success(), "xdotool {args:?} failed");
+    }
+
+    fn xid(&self) -> String {
+        Command::new("xdotool")
+            .args(["search", "--name", "^GPUI shell"])
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .and_then(|ids| ids.lines().last().map(str::to_string))
+            .expect("window id")
+    }
+
+    /// Screenshots the window's area of the screen, popups included: the
+    /// X server has no compositor, so the window's image is what is shown.
+    fn screenshot_popup(&mut self, name: &str) {
+        let file = format!("{name}.png");
+        let status = Command::new("import")
+            .args(["-window", &self.xid()])
+            .arg(self.dir.join(&file))
+            .status()
+            .expect("import");
+        assert!(status.success(), "screenshot failed");
+        self.record(&format!(
+            r#"{{"name":"{name}","file":"{file}","kind":"menu-open","menu":true}}"#
+        ));
+    }
+
+    fn record(&mut self, checkpoint: &str) {
+        if !self.checkpoints.is_empty() {
+            self.checkpoints.push(',');
+        }
+        self.checkpoints.push_str(checkpoint);
+    }
+
     fn show(&self, screen: Screen) {
         update_shell(&self.app, move |shell, cx| {
             shell.screen = screen;
@@ -159,28 +254,22 @@ impl Run {
         let scale = window.scale_factor().unwrap_or(1.);
         let size = window.inner_size().expect("size").to_logical::<f64>(scale);
         let file = format!("{name}.png");
-        let xid = Command::new("xdotool")
-            .args(["search", "--name", "^GPUI shell"])
-            .output()
-            .ok()
-            .and_then(|out| String::from_utf8(out.stdout).ok())
-            .and_then(|ids| ids.lines().last().map(str::to_string))
-            .expect("window id");
+        let xid = self.xid();
         let status = Command::new("import")
             .args(["-window", &xid])
             .arg(self.dir.join(&file))
             .status()
             .expect("import");
         assert!(status.success(), "screenshot failed");
-        if !self.checkpoints.is_empty() {
-            self.checkpoints.push(',');
-        }
         let reports = screen == Screen::Reports;
+        let menu = self.menu;
+        let mut checkpoint = String::new();
         let _ = write!(
-            self.checkpoints,
-            r#"{{"name":"{name}","file":"{file}","reports":{reports},"width":{},"height":{},"scale":{scale}}}"#,
+            checkpoint,
+            r#"{{"name":"{name}","file":"{file}","reports":{reports},"menu":{menu},"width":{},"height":{},"scale":{scale}}}"#,
             size.width, size.height
         );
+        self.record(&checkpoint);
     }
 
     fn random(&mut self) -> u64 {

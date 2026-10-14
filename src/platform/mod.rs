@@ -20,6 +20,8 @@ pub(crate) mod typed_text;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) mod wayland;
 pub(crate) mod window;
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), not(gpui_mobile)))]
+pub(crate) mod x11;
 
 use std::{
     cell::{Cell, RefCell},
