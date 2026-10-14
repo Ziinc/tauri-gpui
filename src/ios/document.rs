@@ -34,11 +34,17 @@ pub(crate) struct Busy;
 
 /// Runs `f` on GPUI's focused input handler, after applying queued view
 /// events so it sees every earlier edit. `Ok(None)` when nothing has focus.
+///
+/// Every synchronous call from UIKit into GPUI goes through here, so a panic
+/// in app code is caught here instead of unwinding into UIKit; the keyboard
+/// then sees GPUI as busy.
 fn gpui<R>(f: impl FnOnce(&mut PlatformInputHandler) -> R) -> Result<Option<R>, Busy> {
-    crate::runtime::with(|runtime| Ok(runtime.ios_input_handler(f)))
-        .ok()
-        .flatten()
-        .ok_or(Busy)
+    crate::ffi::callback("a UIKit text input callback", None, || {
+        crate::runtime::with(|runtime| Ok(runtime.ios_input_handler(f)))
+            .ok()
+            .flatten()
+    })
+    .ok_or(Busy)
 }
 
 fn read_state(handler: &mut PlatformInputHandler) -> Option<TextState> {

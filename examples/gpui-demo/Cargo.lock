@@ -8295,11 +8295,16 @@ dependencies = [
 name = "tauri-plugin-gpui"
 version = "0.1.0"
 dependencies = [
+ "accesskit_macos",
+ "accesskit_unix",
+ "accesskit_windows",
  "anyhow",
  "arboard",
  "futures",
+ "gdkx11",
  "gpui-pre",
  "gpui-pre-wgpu",
+ "gtk",
  "image",
  "log",
  "raw-window-handle",
@@ -8309,6 +8314,7 @@ dependencies = [
  "thiserror 2.0.21",
  "uuid",
  "windows 0.62.2",
+ "x11-dl",
 ]
 
 [[package]]

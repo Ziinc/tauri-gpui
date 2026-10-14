@@ -7,7 +7,7 @@
 //! content renderer of an existing Tauri window; all attached windows share
 //! one GPUI [`App`](gpui::App) running on Tauri's event-loop thread.
 //!
-//! ```ignore
+//! ```
 //! use tauri_plugin_gpui::{GpuiWindowExt, gpui::{self, prelude::*}};
 //!
 //! struct Hello;
@@ -18,21 +18,34 @@
 //!     }
 //! }
 //!
-//! tauri::Builder::default()
-//!     .setup(|app| {
-//!         tauri_plugin_gpui::init(app)?;
-//!         let window = tauri::WindowBuilder::new(app, "main").title("Example").build()?;
-//!         window.attach_gpui(|cx| cx.new(|_| Hello))?;
-//!         Ok(())
-//!     })
-//!     .run(tauri::generate_context!())
-//!     .expect("error while running tauri application");
+//! // In an app, `context` is `tauri::generate_context!()`.
+//! fn run(context: tauri::Context) {
+//!     tauri::Builder::default()
+//!         .setup(|app| {
+//!             tauri_plugin_gpui::init(app)?;
+//!             let window = tauri::WindowBuilder::new(app, "main").title("Example").build()?;
+//!             window.attach_gpui(|cx| cx.new(|_| Hello))?;
+//!             Ok(())
+//!         })
+//!         .run(context)
+//!         .expect("error while running tauri application");
+//! }
 //! ```
+//!
+//! # Platforms and features
+//!
+//! Linux, macOS and Windows work with default features. Android and iOS
+//! need the `mobile` feature; without it, [`init`] returns
+//! [`GpuiError::UnsupportedOperation`] on those targets. Embedding Tauri
+//! child webviews ([`webview_frame`]) is desktop-only.
 
 // GPUI's platform callback signatures are inherently nested closure types.
 #![allow(clippy::type_complexity)]
+#![warn(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod error;
+mod ffi;
 
 #[cfg(gpui_backend)]
 mod events;
@@ -66,6 +79,7 @@ use ios as mobile;
 pub use error::GpuiError;
 pub use gpui;
 #[cfg(all(gpui_backend, not(gpui_mobile)))]
+#[cfg_attr(docsrs, doc(cfg(not(any(target_os = "android", target_os = "ios")))))]
 pub use webview::{WebviewFrame, webview_frame};
 
 use tauri::Wry;

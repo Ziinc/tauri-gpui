@@ -31,9 +31,9 @@ use tauri_plugin_gpui::{
     GpuiConfig, GpuiError, GpuiOptions, GpuiWindowExt,
     gpui::{
         self, App, AppContext as _, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
-        EntityInputHandler, FocusHandle, Global, InteractiveElement as _, IntoElement,
-        KeyDownEvent, MouseButton, ParentElement as _, Pixels, Render, Styled as _, UTF16Selection,
-        WeakEntity, Window, WindowAppearance, canvas, div,
+        EntityInputHandler, ExternalPaths, FocusHandle, Global, InteractiveElement as _,
+        IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Pixels, Render, Styled as _,
+        UTF16Selection, WeakEntity, Window, WindowAppearance, canvas, div,
     },
 };
 
@@ -57,6 +57,13 @@ struct Probe {
     visible: bool,
     keys: Vec<String>,
     text: String,
+    /// Files dropped onto the probe, and drag moves seen while they hovered.
+    dropped: Vec<std::path::PathBuf>,
+    drag_moves: usize,
+    /// IME composition (marked text), kept after `text` until committed.
+    marked: Option<String>,
+    /// Every composition GPUI was handed, in order.
+    marks: Vec<String>,
     _visibility: gpui::Subscription,
 }
 
@@ -82,6 +89,10 @@ impl Probe {
             visible: window.is_visible(),
             keys: Vec::new(),
             text: String::new(),
+            dropped: Vec::new(),
+            drag_moves: 0,
+            marked: None,
+            marks: Vec::new(),
             _visibility: visibility,
         }
     }
@@ -118,6 +129,10 @@ impl Render for Probe {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, _| {
                 this.keys.push(event.keystroke.key.clone());
             }))
+            .on_drag_move::<ExternalPaths>(cx.listener(|this, _, _, _| this.drag_moves += 1))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, _| {
+                this.dropped.extend(paths.paths().iter().cloned());
+            }))
             .child(format!("renders: {} text: {}", self.renders, self.text))
             .child(
                 canvas(
@@ -149,7 +164,7 @@ impl EntityInputHandler for Probe {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let end = self.text.encode_utf16().count();
+        let end = utf16_len(&self.text) + self.marked.as_deref().map_or(0, utf16_len);
         Some(UTF16Selection {
             range: end..end,
             reversed: false,
@@ -157,11 +172,19 @@ impl EntityInputHandler for Probe {
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        None
+        let start = utf16_len(&self.text);
+        Some(start..start + utf16_len(self.marked.as_deref()?))
     }
 
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {}
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        // Marked text stays in the document.
+        if let Some(marked) = self.marked.take() {
+            self.text.push_str(&marked);
+            cx.notify();
+        }
+    }
 
+    /// Inserts at the end, replacing the composition if there is one.
     fn replace_text_in_range(
         &mut self,
         _: Option<Range<usize>>,
@@ -169,6 +192,7 @@ impl EntityInputHandler for Probe {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.marked = None;
         self.text.push_str(text);
         cx.notify();
     }
@@ -176,21 +200,28 @@ impl EntityInputHandler for Probe {
     fn replace_and_mark_text_in_range(
         &mut self,
         _: Option<Range<usize>>,
-        _: &str,
+        text: &str,
         _: Option<Range<usize>>,
         _: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
+        self.marked = Some(text.to_owned());
+        self.marks.push(text.to_owned());
+        cx.notify();
     }
 
+    /// A caret in the top-left corner, for IME candidate placement.
     fn bounds_for_range(
         &mut self,
         _: Range<usize>,
-        _: Bounds<Pixels>,
+        element: Bounds<Pixels>,
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        None
+        Some(Bounds::new(
+            element.origin,
+            gpui::size(gpui::px(1.), gpui::px(16.)),
+        ))
     }
 
     fn character_index_for_point(
@@ -201,6 +232,10 @@ impl EntityInputHandler for Probe {
     ) -> Option<usize> {
         None
     }
+}
+
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
 }
 
 /// Weak handles to every probe by window label: weak so the harness can
@@ -230,6 +265,10 @@ struct Seen {
     visible: bool,
     keys: Vec<String>,
     text: String,
+    dropped: Vec<std::path::PathBuf>,
+    drag_moves: usize,
+    marked: Option<String>,
+    marks: Vec<String>,
 }
 
 fn attach_probe(window: &tauri::Window<Wry>) -> Result<(), GpuiError> {
@@ -387,6 +426,10 @@ impl Harness {
                 visible: p.visible,
                 keys: p.keys.clone(),
                 text: p.text.clone(),
+                dropped: p.dropped.clone(),
+                drag_moves: p.drag_moves,
+                marked: p.marked.clone(),
+                marks: p.marks.clone(),
             })
         })
     }
@@ -1433,6 +1476,296 @@ fn input_chaos(h: &mut Harness) {
     h.window_gone(&label);
 }
 
+/// A GTK drag source in another process, so the drop goes through XDND.
+const DRAG_SOURCE: &str = r#"
+import sys, gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, Gdk
+uri = sys.argv[1]
+window = Gtk.Window(title="drag-source")
+window.set_default_size(160, 120)
+window.move(1300, 700)
+box = Gtk.EventBox()
+box.add(Gtk.Label(label="drag me"))
+box.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, [Gtk.TargetEntry.new("text/uri-list", 0, 0)], Gdk.DragAction.COPY)
+box.connect("drag-data-get", lambda w, c, data, i, t: data.set_uris([uri]))
+box.connect("drag-end", lambda *a: print("drag-end", flush=True))
+window.add(box)
+window.connect("destroy", Gtk.main_quit)
+window.show_all()
+print("ready", flush=True)
+Gtk.main()
+"#;
+
+/// Python 3 with PyGObject (GTK 3), which may not be the default `python3`.
+fn python_with_gtk() -> Option<&'static str> {
+    ["python3", "python3.12", "python3.11", "python3.13"]
+        .into_iter()
+        .find(|python| {
+            Command::new(python)
+                .args(["-c", "import gi; gi.require_version('Gtk', '3.0')"])
+                .output()
+                .is_ok_and(|out| out.status.success())
+        })
+}
+
+/// A real XDND drag of a file from another app onto a GPUI window.
+fn file_drop(h: &mut Harness) {
+    let python = python_with_gtk();
+    if !h.has_wm || xdotool(&["version"]).is_err() || python.is_none() {
+        h.check(
+            "file drop",
+            true,
+            "skipped: needs xdotool, a window manager and python3-gi",
+        );
+        return;
+    }
+    let file = std::env::temp_dir().join(format!("chaos-drop-{}.txt", std::process::id()));
+    std::fs::write(&file, "dropped").unwrap();
+    let uri = format!("file://{}", file.display());
+    let mut source = Command::new(python.unwrap())
+        .args(["-c", DRAG_SOURCE, &uri])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn drag source");
+
+    let label = h.open_probe("drop", (500., 400.));
+    h.rendered(&label);
+    let source_xid = (0..50).find_map(|_| {
+        thread::sleep(Duration::from_millis(100));
+        h.xid("drag-source")
+    });
+    let (Some(source_xid), Some(xid)) = (source_xid, h.xid(&label)) else {
+        h.check("drag source and target found by xdotool", false, "");
+        source.kill().ok();
+        source.wait().ok();
+        return;
+    };
+    xdotool(&["windowactivate", "--sync", &source_xid]).ok();
+    thread::sleep(Duration::from_millis(300));
+    xdotool(&["mousemove", "--window", &source_xid, "80", "60"]).unwrap();
+    xdotool(&["mousedown", "1"]).unwrap();
+    // GTK starts a drag after the pointer moves past its threshold.
+    for step in 1..=10 {
+        xdotool(&[
+            "mousemove",
+            "--window",
+            &source_xid,
+            &(80 + step * 4).to_string(),
+            "60",
+        ])
+        .ok();
+        thread::sleep(Duration::from_millis(20));
+    }
+    for (x, y) in [(100, 100), (200, 150), (250, 200), (260, 210)] {
+        xdotool(&[
+            "mousemove",
+            "--window",
+            &xid,
+            &x.to_string(),
+            &y.to_string(),
+        ])
+        .ok();
+        thread::sleep(Duration::from_millis(150));
+    }
+    xdotool(&["mouseup", "1"]).unwrap();
+
+    let l = label.clone();
+    let dropped = h.wait(Duration::from_secs(5), |h| {
+        h.seen(&l).is_some_and(|s| !s.dropped.is_empty())
+    });
+    let seen = h.seen(&label).unwrap_or_default();
+    h.check(
+        "a file dragged from another app is dropped on GPUI with its path",
+        dropped && seen.dropped == [file.clone()],
+        format!("dropped = {:?}", seen.dropped),
+    );
+    h.check(
+        "drag moves reach GPUI while the file hovers",
+        seen.drag_moves > 0,
+        format!("drag moves = {}", seen.drag_moves),
+    );
+
+    source.kill().ok();
+    source.wait().ok();
+    std::fs::remove_file(&file).ok();
+    h.close(&label);
+    h.window_gone(&label);
+}
+
+/// Composition through the system input method (GTK's IM context; `main`
+/// selects GTK's built-in one unless `GTK_IM_MODULE` is set): its preedit
+/// must reach GPUI as marked text, its commit replace it, and keys it takes
+/// must not also arrive as typed text.
+fn ime(h: &mut Harness) {
+    if !cfg!(target_os = "linux") || !h.has_wm || xdotool(&["version"]).is_err() {
+        h.check(
+            "ime",
+            true,
+            "skipped: needs Linux, xdotool and a window manager",
+        );
+        return;
+    }
+    let label = h.open_probe("ime", (400., 300.));
+    h.rendered(&label);
+    let Some(xid) = h.xid(&label) else {
+        h.check("ime window found by xdotool", false, "");
+        return;
+    };
+    xdotool(&["windowactivate", "--sync", &xid]).ok();
+    xdotool(&["windowfocus", "--sync", &xid]).ok();
+    thread::sleep(Duration::from_millis(300));
+    let seen = |h: &Harness| h.seen(&label).unwrap_or_default();
+
+    // Ctrl+Shift+U starts a Unicode code point; the digits are composed in
+    // a preedit that the space commits.
+    xdotool(&["key", "--delay", "40", "ctrl+shift+u", "4", "f", "6", "0"]).unwrap();
+    let composing = h.wait(Duration::from_secs(5), |h| {
+        seen(h).marked.as_deref() == Some("u4f60")
+    });
+    let s = seen(h);
+    h.check(
+        "preedit reaches GPUI as marked text",
+        composing
+            && s.text.is_empty()
+            && s.marks
+                .ends_with(&["u4f".into(), "u4f6".into(), "u4f60".into()]),
+        format!(
+            "marked = {:?}, marks = {:?}, text = {:?}",
+            s.marked, s.marks, s.text
+        ),
+    );
+    xdotool(&["key", "space"]).unwrap();
+    let committed = h.wait(Duration::from_secs(5), |h| {
+        let s = seen(h);
+        s.text == "你" && s.marked.is_none()
+    });
+    let s = seen(h);
+    h.check(
+        "commit replaces the composition, its keys type nothing",
+        committed,
+        format!("text = {:?}, marked = {:?}", s.text, s.marked),
+    );
+
+    // Escape cancels a composition and removes its marked text.
+    xdotool(&["key", "--delay", "40", "ctrl+shift+u", "4", "1"]).unwrap();
+    h.wait(Duration::from_secs(5), |h| {
+        seen(h).marked.as_deref() == Some("u41")
+    });
+    xdotool(&["key", "Escape"]).unwrap();
+    let cancelled = h.wait(Duration::from_secs(5), |h| {
+        let s = seen(h);
+        s.marked.is_none() && s.marks.last().is_some_and(|m| m == "u41")
+    });
+    thread::sleep(Duration::from_millis(200));
+    let s = seen(h);
+    h.check(
+        "escape cancels the composition",
+        cancelled && s.text == "你",
+        format!(
+            "text = {:?}, marked = {:?}, marks tail = {:?}",
+            s.text,
+            s.marked,
+            s.marks.last()
+        ),
+    );
+
+    // A dead key composes with the next letter.
+    xdotool(&["key", "--delay", "40", "dead_acute", "e"]).unwrap();
+    let composed = h.wait(Duration::from_secs(5), |h| seen(h).text == "你é");
+    let s = seen(h);
+    h.check(
+        "dead keys compose once",
+        composed && s.marked.is_none(),
+        format!("text = {:?}, marked = {:?}", s.text, s.marked),
+    );
+
+    // Keys the input method does not compose still reach GPUI as keys.
+    let keys_before = seen(h).keys.len();
+    xdotool(&["type", "--delay", "40", "ok"]).unwrap();
+    xdotool(&["key", "ctrl+a", "BackSpace"]).unwrap();
+    let typed = h.wait(Duration::from_secs(5), |h| {
+        let s = seen(h);
+        s.text == "你éok" && s.keys.ends_with(&["a".into(), "backspace".into()])
+    });
+    let s = seen(h);
+    h.check(
+        "plain keys and shortcuts bypass the input method",
+        typed && s.keys[keys_before..].starts_with(&["o".into(), "k".into()]),
+        format!(
+            "text = {:?}, keys = {:?}",
+            s.text,
+            &s.keys[keys_before.min(s.keys.len())..]
+        ),
+    );
+
+    h.close(&label);
+    h.window_gone(&label);
+}
+
+/// Pinyin through a real IBus engine (opt-in: run with `GTK_IM_MODULE=ibus`
+/// and `ibus engine libpinyin`). IBus answers keys asynchronously and sends
+/// back the ones its engine does not want, so this covers that path too.
+fn ime_pinyin(h: &mut Harness) {
+    let label = h.open_probe("pinyin", (400., 300.));
+    h.rendered(&label);
+    let Some(xid) = h.xid(&label) else {
+        h.check("pinyin window found by xdotool", false, "");
+        return;
+    };
+    xdotool(&["windowactivate", "--sync", &xid]).ok();
+    xdotool(&["windowfocus", "--sync", &xid]).ok();
+    thread::sleep(Duration::from_millis(300));
+    let seen = |h: &Harness| h.seen(&label).unwrap_or_default();
+
+    // libpinyin shows its first candidate as the preedit, updated per key.
+    xdotool(&["type", "--delay", "60", "nihao"]).unwrap();
+    let composing = h.wait(Duration::from_secs(5), |h| {
+        let s = seen(h);
+        s.marks.len() >= 5 && s.marked.is_some()
+    });
+    let s = seen(h);
+    h.check(
+        "pinyin preedit reaches GPUI as marked text",
+        composing && s.text.is_empty(),
+        format!(
+            "marked = {:?}, marks = {:?}, text = {:?}",
+            s.marked, s.marks, s.text
+        ),
+    );
+    xdotool(&["key", "space"]).unwrap();
+    let committed = h.wait(Duration::from_secs(5), |h| {
+        let s = seen(h);
+        s.text == "你好" && s.marked.is_none()
+    });
+    let s = seen(h);
+    h.check(
+        "the candidate is committed in place of the preedit",
+        committed,
+        format!("text = {:?}, marked = {:?}", s.text, s.marked),
+    );
+
+    // Keys the engine passes on still reach GPUI key bindings.
+    let keys_before = seen(h).keys.len();
+    xdotool(&["key", "--delay", "60", "ctrl+a", "Left", "BackSpace"]).unwrap();
+    let passed = h.wait(Duration::from_secs(5), |h| {
+        seen(h).keys[keys_before..].ends_with(&["a".into(), "left".into(), "backspace".into()])
+    });
+    let s = seen(h);
+    h.check(
+        "keys IBus does not use reach GPUI once",
+        passed && s.keys.len() == keys_before + 3 && s.text == "你好",
+        format!(
+            "keys = {:?}, text = {:?}",
+            &s.keys[keys_before.min(s.keys.len())..],
+            s.text
+        ),
+    );
+
+    h.close(&label);
+    h.window_gone(&label);
+}
+
 /// Hidden windows keep their GPUI surface and repaint when shown again.
 fn hide_show(h: &mut Harness) {
     let label = h.open_probe("hide", (300., 200.));
@@ -1907,6 +2240,12 @@ fn main() {
     // WebKitGTK cannot composite on a virtual display.
     // SAFETY: single-threaded at this point.
     unsafe { std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1") };
+    // The `ime` scenario drives GTK's built-in input method; a desktop IME
+    // (IBus, Fcitx) can be tested by setting this explicitly.
+    if std::env::var_os("GTK_IM_MODULE").is_none() {
+        // SAFETY: as above.
+        unsafe { std::env::set_var("GTK_IM_MODULE", "gtk-im-context-simple") };
+    }
 
     let seed = std::env::var("CHAOS_SEED")
         .ok()
@@ -2021,6 +2360,8 @@ fn run(app: AppHandle<Wry>, seed: u64) {
         ("clipboard", clipboard),
         ("thread_hammer", thread_hammer),
         ("input_chaos", input_chaos),
+        ("file_drop", file_drop),
+        ("ime", ime),
         ("hide_show", hide_show),
         ("minimize", minimize),
         ("displays", displays),
@@ -2031,9 +2372,12 @@ fn run(app: AppHandle<Wry>, seed: u64) {
         ("gpui_window_ops", gpui_window_ops),
         ("gpui_quit", gpui_quit),
     ];
-    // Benchmarks are slow and only meaningful on a quiet machine: they run
-    // only when named in CHAOS_ONLY.
-    let benches: &[Scenario] = &[("bench_window_events", bench_window_events)];
+    // Benchmarks are slow and only meaningful on a quiet machine, and
+    // `ime_pinyin` needs IBus set up: they run only when named in CHAOS_ONLY.
+    let benches: &[Scenario] = &[
+        ("bench_window_events", bench_window_events),
+        ("ime_pinyin", ime_pinyin),
+    ];
     let only = std::env::var("CHAOS_ONLY").ok();
     let named = |name: &str| {
         only.as_deref()

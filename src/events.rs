@@ -57,7 +57,13 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             if !focused {
                 inner.state.borrow_mut().typed_text.reset();
             }
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            if let Some(ime) = &inner.ime {
+                ime.set_active(*focused);
+            }
             inner.call_bool(|c| &mut c.active_status_change, *focused);
+            #[cfg(not(gpui_mobile))]
+            inner.set_a11y_focused(*focused);
         }
         WindowEvent::CursorEntered { .. } => {
             inner.state.borrow_mut().hovered = true;
@@ -181,6 +187,22 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             }
         }
         WindowEvent::ReceivedImeText(text) => inner.handle_ime_commit(text),
+        // macOS and Windows; on Linux the window is a GTK drag destination.
+        #[cfg(not(gpui_mobile))]
+        WindowEvent::HoveredFile(path) => {
+            inner.file_drop.borrow_mut().hovered(path.clone());
+            inner.waker.wake();
+        }
+        #[cfg(not(gpui_mobile))]
+        WindowEvent::DroppedFile(path) => {
+            inner.file_drop.borrow_mut().dropped(path.clone());
+            inner.waker.wake();
+        }
+        #[cfg(not(gpui_mobile))]
+        WindowEvent::HoveredFileCancelled => {
+            inner.file_drop.borrow_mut().cancelled();
+            inner.waker.wake();
+        }
         WindowEvent::ThemeChanged(theme) => {
             inner.state.borrow_mut().appearance = appearance(*theme);
             inner.call_unit(|c| &mut c.appearance_changed);

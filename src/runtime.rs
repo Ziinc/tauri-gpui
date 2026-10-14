@@ -16,8 +16,8 @@ use std::{
 };
 
 use gpui::{
-    AnyWindowHandle, App, Application, ApplicationHandle, AsyncApp, Bounds, QuitMode, WindowBounds,
-    WindowOptions,
+    AnyWindowHandle, App, Application, ApplicationHandle, AsyncApp, Bounds, QuitMode,
+    TitlebarOptions, WindowBounds, WindowOptions,
 };
 #[cfg(not(gpui_android))]
 use gpui::{point, px};
@@ -35,6 +35,7 @@ use tauri_runtime_wry::{
 
 use crate::{
     GpuiConfig, GpuiError, GpuiOptions, events,
+    ffi::lock,
     platform::{
         PENDING_SURFACE, TauriPlatform,
         dispatcher::{LoopWaker, TauriDispatcher},
@@ -100,13 +101,28 @@ pub(crate) fn with<R>(
     let runtime = RUNTIME.try_with(Cell::get).ok().flatten();
     match runtime {
         Some(runtime) => f(runtime),
-        None if INITIALIZED.lock().unwrap().is_some() => Err(GpuiError::NotMainThread),
+        None if lock(&INITIALIZED).is_some() => Err(GpuiError::NotMainThread),
         None => Err(GpuiError::NotInitialized),
     }
 }
 
 /// Thread the runtime was created on, for diagnosing off-thread calls.
 static INITIALIZED: Mutex<Option<ThreadId>> = Mutex::new(None);
+
+/// Runs `f`, which feeds GPUI input from outside TAO's event callback (a
+/// GTK signal handler), under the same reentrancy guard as TAO events.
+/// `None` while GPUI is mid-update, or off the main thread.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub(crate) fn input<R>(f: impl FnOnce() -> R) -> Option<R> {
+    with(|runtime| {
+        Ok((runtime.depth.get() == 0).then(|| {
+            let _guard = runtime.enter();
+            f()
+        }))
+    })
+    .ok()
+    .flatten()
+}
 
 struct DepthGuard<'a>(&'a Cell<usize>);
 
@@ -118,7 +134,7 @@ impl Drop for DepthGuard<'_> {
 
 pub(crate) fn initialize(app: AppHandle<Wry>, config: GpuiConfig) -> Result<(), GpuiError> {
     {
-        let mut initialized = INITIALIZED.lock().unwrap();
+        let mut initialized = lock(&INITIALIZED);
         if initialized.is_some() {
             return Err(GpuiError::AlreadyInitialized);
         }
@@ -345,7 +361,8 @@ impl Runtime {
                 waker.wake();
             }
         });
-        let inner = Rc::new(WindowInner {
+        // The weak handle lets native input-method callbacks reach the window.
+        let inner = Rc::new_cyclic(|_weak| WindowInner {
             label: label.clone(),
             tauri_window: window.clone(),
             raw: Cell::new(raw),
@@ -370,7 +387,17 @@ impl Runtime {
             defer,
             #[cfg(not(gpui_mobile))]
             webviews: RefCell::default(),
+            #[cfg(not(gpui_mobile))]
+            file_drop: RefCell::default(),
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            ime: crate::platform::ime::linux::Ime::new(window, _weak.clone()),
+            #[cfg(not(gpui_mobile))]
+            a11y: RefCell::default(),
+            #[cfg(not(gpui_mobile))]
+            a11y_bounds_dirty: Cell::new(true),
         });
+        #[cfg(all(not(gpui_mobile), any(target_os = "linux", target_os = "freebsd")))]
+        crate::platform::file_drop::gtk::install(window, Rc::downgrade(&inner));
         // The window may have been built maximized, fullscreen or minimized.
         inner.sync_window_mode();
         inner.reported_visible.set(inner.state.borrow().visible);
@@ -381,7 +408,11 @@ impl Runtime {
                 origin,
                 logical(physical_size, scale_factor),
             ))),
-            titlebar: None,
+            // GPUI only reads the title, as the accessible name of the window.
+            titlebar: Some(TitlebarOptions {
+                title: window.title().ok().map(Into::into),
+                ..Default::default()
+            }),
             focus: options.focus,
             show: false,
             ..Default::default()
@@ -468,10 +499,7 @@ impl Runtime {
         if !self.proxy_installed.replace(true) {
             let proxy = Mutex::new(proxy.clone());
             self.waker.set(Box::new(move || {
-                let _ = proxy
-                    .lock()
-                    .unwrap()
-                    .send_event(Message::Task(Box::new(|| {})));
+                let _ = lock(&proxy).send_event(Message::Task(Box::new(|| {})));
             }));
         }
         if self.depth.get() > 0 {
@@ -653,6 +681,12 @@ impl Runtime {
             for surface in &surfaces {
                 if surface.closed.get() {
                     continue;
+                }
+                #[cfg(not(gpui_mobile))]
+                surface.flush_file_drop();
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                if let Some(ime) = &surface.ime {
+                    ime.flush(surface);
                 }
                 surface.flush_ime_commit();
                 surface.refresh_window_mode();

@@ -144,6 +144,18 @@ pub(crate) struct WindowInner {
     /// Child webviews placed by `webview_frame`, keyed by webview label.
     #[cfg(not(gpui_mobile))]
     pub webviews: RefCell<std::collections::HashMap<String, crate::webview::EmbeddedWebview>>,
+    /// Files being dragged onto the window from other apps.
+    #[cfg(not(gpui_mobile))]
+    pub file_drop: RefCell<super::file_drop::FileDrop>,
+    /// The system input method; `None` when GTK could not provide one.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    pub ime: Option<super::ime::linux::Ime>,
+    /// Created by GPUI's `a11y_init` unless accessibility is disabled.
+    #[cfg(not(gpui_mobile))]
+    pub a11y: RefCell<Option<super::a11y::A11yAdapter>>,
+    /// The window moved or resized since the accessibility adapter was told.
+    #[cfg(not(gpui_mobile))]
+    pub a11y_bounds_dirty: Cell<bool>,
 }
 
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
@@ -221,6 +233,55 @@ impl WindowInner {
         }
     }
 
+    /// Hands GPUI the file drag steps gathered since the last drain.
+    #[cfg(not(gpui_mobile))]
+    pub fn flush_file_drop(&self) {
+        use super::file_drop::DropStep;
+        use gpui::{ExternalPaths, FileDropEvent};
+
+        let (tao_steps, queued) = {
+            let mut file_drop = self.file_drop.borrow_mut();
+            let tao_steps = file_drop.has_tao_events().then(|| file_drop.take_tao());
+            (tao_steps, file_drop.take_queued())
+        };
+        let mut steps: Vec<_> = queued.into_iter().collect();
+        if let Some(tao_steps) = tao_steps {
+            // TAO's drag events carry no position: use the pointer's.
+            let position = self.cursor_position();
+            steps.extend(tao_steps.into_iter().map(|step| (step, position)));
+        }
+        for (step, position) in steps {
+            self.state.borrow_mut().mouse_position = position;
+            let event = match step {
+                DropStep::Entered(paths) => FileDropEvent::Entered {
+                    position,
+                    paths: ExternalPaths(paths.into()),
+                },
+                DropStep::Pending => FileDropEvent::Pending { position },
+                DropStep::Submit => FileDropEvent::Submit { position },
+                DropStep::Exited => FileDropEvent::Exited,
+            };
+            self.handle_input(PlatformInput::FileDrop(event));
+        }
+    }
+
+    /// The pointer in window coordinates, asked of the OS (it moves without
+    /// window events while another app drags files over the window).
+    #[cfg(not(gpui_mobile))]
+    fn cursor_position(&self) -> Point<Pixels> {
+        let window = &self.tauri_window;
+        let queried = (|| {
+            let cursor = window.cursor_position().ok()?;
+            let origin = window.inner_position().ok()?;
+            let scale = self.state.borrow().scale_factor as f64;
+            Some(gpui::point(
+                px(((cursor.x - origin.x as f64) / scale) as f32),
+                px(((cursor.y - origin.y as f64) / scale) as f32),
+            ))
+        })();
+        queried.unwrap_or_else(|| self.state.borrow().mouse_position)
+    }
+
     /// Inserts an IME commit no key press claimed.
     pub fn flush_ime_commit(&self) {
         let text = self.state.borrow_mut().typed_text.flush();
@@ -249,8 +310,11 @@ impl WindowInner {
 
     /// Like [`Self::with_input_handler`], returning `f`'s result, or `None`
     /// when no text input has focus.
-    #[cfg(any(gpui_mobile, test))]
-    #[cfg_attr(not(gpui_mobile), allow(dead_code))]
+    #[cfg(any(gpui_mobile, test, target_os = "linux", target_os = "freebsd"))]
+    #[cfg_attr(
+        not(any(gpui_mobile, target_os = "linux", target_os = "freebsd")),
+        allow(dead_code)
+    )]
     pub fn input_handler<R>(&self, f: impl FnOnce(&mut PlatformInputHandler) -> R) -> Option<R> {
         let mut handler = self.state.borrow_mut().input_handler.take()?;
         let result = f(&mut handler);
@@ -327,7 +391,58 @@ impl WindowInner {
     /// Marks the monitor for a re-read: moving changes nothing else.
     pub fn window_moved(&self) {
         self.display_dirty.set(true);
+        #[cfg(not(gpui_mobile))]
+        self.a11y_bounds_dirty.set(true);
         self.waker.wake();
+    }
+
+    /// Gives the accessibility adapter the window's screen rectangles if it
+    /// moved or resized since the last call. Like the window mode, they are
+    /// read from Tauri at most once per drain.
+    #[cfg(not(gpui_mobile))]
+    pub fn sync_a11y_bounds(&self) {
+        // Only AT-SPI asks the application where its window is.
+        if !cfg!(any(target_os = "linux", target_os = "freebsd")) || !self.a11y_bounds_dirty.take()
+        {
+            return;
+        }
+        let mut a11y = self.a11y.borrow_mut();
+        let Some(adapter) = a11y.as_mut() else {
+            return;
+        };
+        let window = &self.tauri_window;
+        let (Ok(outer_position), Ok(outer_size), Ok(inner_position), Ok(inner_size)) = (
+            window.outer_position(),
+            window.outer_size(),
+            window.inner_position(),
+            window.inner_size(),
+        ) else {
+            return;
+        };
+        let rect = |position: tauri::PhysicalPosition<i32>, size: tauri::PhysicalSize<u32>| {
+            gpui::accesskit::Rect {
+                x0: position.x as f64,
+                y0: position.y as f64,
+                x1: position.x as f64 + size.width as f64,
+                y1: position.y as f64 + size.height as f64,
+            }
+        };
+        adapter.set_bounds(
+            rect(outer_position, outer_size),
+            rect(inner_position, inner_size),
+        );
+    }
+
+    /// Tells the accessibility adapter whether the window has focus.
+    #[cfg(not(gpui_mobile))]
+    pub fn set_a11y_focused(&self, focused: bool) {
+        // Not while a tree update raises its events, should that ever pump
+        // a focus change.
+        if let Ok(mut a11y) = self.a11y.try_borrow_mut()
+            && let Some(adapter) = a11y.as_mut()
+        {
+            adapter.set_focused(focused);
+        }
     }
 
     /// Re-reads window modes TAO reports no dedicated event for, if an event
@@ -371,6 +486,8 @@ impl WindowInner {
             // GPUI re-reads the window's display on bounds changes.
             self.call_unit(|c| &mut c.moved);
         }
+        #[cfg(not(gpui_mobile))]
+        self.sync_a11y_bounds();
         self.report_visibility();
     }
 
@@ -459,6 +576,14 @@ impl WindowInner {
         if let Some(mut renderer) = self.state.borrow_mut().renderer.take() {
             renderer.destroy();
         }
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(ime) = &self.ime {
+            ime.shutdown();
+        }
+        // Unhooks TAO's view or window procedure (macOS, Windows) and leaves
+        // the AT-SPI bus (Linux).
+        #[cfg(not(gpui_mobile))]
+        drop(self.a11y.borrow_mut().take());
         // Break reference cycles between GPUI closures and this window.
         let callbacks = std::mem::take(&mut *self.callbacks.borrow_mut());
         let handler = self.state.borrow_mut().input_handler.take();
@@ -789,9 +914,38 @@ impl PlatformWindow for TauriGpuiWindow {
             .and_then(|r| r.gpu_specs())
     }
 
-    fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
-        // Tauri exposes no IME candidate-window positioning API.
-        super::log_unsupported("update_ime_position");
+    fn update_ime_position(&self, bounds: Bounds<Pixels>) {
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(ime) = &self.inner.ime {
+            ime.set_cursor(bounds);
+        }
+        #[cfg(target_os = "windows")]
+        super::ime::windows::set_position(
+            self.get_raw_handle(),
+            super::ime::pixel_rect(bounds, self.inner.state.borrow().scale_factor),
+        );
+        // TAO's macOS view answers `firstRectForCharacterRange:` from a spot
+        // only `tao::Window::set_ime_position` sets, and tauri-runtime-wry
+        // keeps the TAO window private, so the candidate window stays where
+        // TAO puts it by default (the window's top-left corner). Mobile
+        // keyboards query the input view instead.
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "windows")))]
+        {
+            let _ = bounds;
+            super::log_unsupported("update_ime_position");
+        }
+    }
+
+    /// Routes keys through the system input method while a text input has
+    /// focus (see `ime::linux`).
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    fn text_input_state_changed(&self, change: gpui::TextInputStateChange) {
+        let Some(ime) = &self.inner.ime else { return };
+        match change {
+            gpui::TextInputStateChange::FocusGained => ime.set_text_input(true),
+            gpui::TextInputStateChange::FocusLost => ime.set_text_input(false),
+            _ => {}
+        }
     }
 
     #[cfg(gpui_mobile)]
@@ -848,6 +1002,30 @@ impl PlatformWindow for TauriGpuiWindow {
                 self.inner.text_input_changed(None);
             }
         }
+    }
+
+    #[cfg(not(gpui_mobile))]
+    fn a11y_init(&self, callbacks: gpui::A11yCallbacks) {
+        let focused = self.inner.state.borrow().active;
+        let adapter = super::a11y::A11yAdapter::new(self.inner.raw.get(), focused, callbacks);
+        *self.inner.a11y.borrow_mut() = adapter;
+        self.inner.a11y_bounds_dirty.set(true);
+        self.inner.sync_a11y_bounds();
+    }
+
+    #[cfg(not(gpui_mobile))]
+    fn a11y_tree_update(&self, tree_update: gpui::accesskit::TreeUpdate) {
+        if let Some(adapter) = self.inner.a11y.borrow_mut().as_mut() {
+            adapter.update(tree_update);
+        }
+    }
+
+    #[cfg(not(gpui_mobile))]
+    fn a11y_update_window_bounds(&self) {
+        // GPUI never calls this itself: the drain syncs the bounds after
+        // every move and resize.
+        self.inner.a11y_bounds_dirty.set(true);
+        self.inner.sync_a11y_bounds();
     }
 
     #[cfg(target_os = "windows")]

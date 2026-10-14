@@ -16,6 +16,7 @@ use std::{
 };
 
 use super::queue::PriorityQueue;
+use crate::ffi::lock;
 use gpui::{PlatformDispatcher, Priority, RunnableVariant};
 
 /// Wakes the TAO event loop so queued GPUI work gets drained.
@@ -34,13 +35,13 @@ impl LoopWaker {
 
     /// Replaces the wake function (with one that posts through the TAO proxy).
     pub(crate) fn set(&self, wake: Box<dyn Fn() + Send>) {
-        *self.wake.lock().unwrap() = Some(wake);
+        *lock(&self.wake) = Some(wake);
     }
 
     /// Requests one event-loop iteration. Coalesced until the next drain.
     pub(crate) fn wake(&self) {
         if !self.pending.swap(true, Ordering::AcqRel)
-            && let Some(wake) = &*self.wake.lock().unwrap()
+            && let Some(wake) = &*lock(&self.wake)
         {
             wake();
         }
@@ -184,7 +185,7 @@ impl PlatformDispatcher for TauriDispatcher {
     }
 
     fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant) {
-        if let Err(error) = self.timer_sender.lock().unwrap().send((duration, runnable)) {
+        if let Err(error) = lock(&self.timer_sender).send((duration, runnable)) {
             std::mem::forget(error);
         }
     }
