@@ -9,11 +9,23 @@ repository = "https://github.com/ziinc/tauri-gpui"
 homepage = "https://github.com/ziinc/tauri-gpui"
 documentation = "https://docs.rs/tauri-plugin-gpui"
 readme = "README.md"
-exclude = [".github", "docs"]
+exclude = [".github", "docs", "PRD.md", "scripts", "tests"]
 keywords = ["tauri", "tauri-plugin", "gpui", "gui"]
 categories = ["gui"]
 # Lets the app's tauri-build find the Android library in `android/`.
 links = "tauri-plugin-gpui"
+
+[package.metadata.docs.rs]
+# `mobile` only changes Android and iOS builds; enabling it documents
+# everything those targets expose.
+features = ["mobile"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-linux-android",
+]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [workspace]
 # The demo is its own workspace so gpui-kit (a demo-only dependency) never
