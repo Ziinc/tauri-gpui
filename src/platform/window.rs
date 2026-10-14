@@ -147,6 +147,9 @@ pub(crate) struct WindowInner {
     /// Files being dragged onto the window from other apps.
     #[cfg(not(gpui_mobile))]
     pub file_drop: RefCell<super::file_drop::FileDrop>,
+    /// The system input method; `None` when GTK could not provide one.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    pub ime: Option<super::ime::linux::Ime>,
 }
 
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
@@ -301,8 +304,11 @@ impl WindowInner {
 
     /// Like [`Self::with_input_handler`], returning `f`'s result, or `None`
     /// when no text input has focus.
-    #[cfg(any(gpui_mobile, test))]
-    #[cfg_attr(not(gpui_mobile), allow(dead_code))]
+    #[cfg(any(gpui_mobile, test, target_os = "linux", target_os = "freebsd"))]
+    #[cfg_attr(
+        not(any(gpui_mobile, target_os = "linux", target_os = "freebsd")),
+        allow(dead_code)
+    )]
     pub fn input_handler<R>(&self, f: impl FnOnce(&mut PlatformInputHandler) -> R) -> Option<R> {
         let mut handler = self.state.borrow_mut().input_handler.take()?;
         let result = f(&mut handler);
@@ -510,6 +516,10 @@ impl WindowInner {
         }
         if let Some(mut renderer) = self.state.borrow_mut().renderer.take() {
             renderer.destroy();
+        }
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(ime) = &self.ime {
+            ime.shutdown();
         }
         // Break reference cycles between GPUI closures and this window.
         let callbacks = std::mem::take(&mut *self.callbacks.borrow_mut());
@@ -841,9 +851,29 @@ impl PlatformWindow for TauriGpuiWindow {
             .and_then(|r| r.gpu_specs())
     }
 
-    fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
+    fn update_ime_position(&self, bounds: Bounds<Pixels>) {
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(ime) = &self.inner.ime {
+            ime.set_cursor(bounds);
+        }
         // Tauri exposes no IME candidate-window positioning API.
-        super::log_unsupported("update_ime_position");
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+        {
+            let _ = bounds;
+            super::log_unsupported("update_ime_position");
+        }
+    }
+
+    /// Routes keys through the system input method while a text input has
+    /// focus (see `ime::linux`).
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    fn text_input_state_changed(&self, change: gpui::TextInputStateChange) {
+        let Some(ime) = &self.inner.ime else { return };
+        match change {
+            gpui::TextInputStateChange::FocusGained => ime.set_text_input(true),
+            gpui::TextInputStateChange::FocusLost => ime.set_text_input(false),
+            _ => {}
+        }
     }
 
     #[cfg(gpui_mobile)]

@@ -57,6 +57,10 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             if !focused {
                 inner.state.borrow_mut().typed_text.reset();
             }
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            if let Some(ime) = &inner.ime {
+                ime.set_active(*focused);
+            }
             inner.call_bool(|c| &mut c.active_status_change, *focused);
         }
         WindowEvent::CursorEntered { .. } => {

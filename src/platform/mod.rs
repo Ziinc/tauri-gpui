@@ -12,6 +12,7 @@ pub(crate) mod clipboard;
 pub(crate) mod dispatcher;
 #[cfg(not(gpui_mobile))]
 pub(crate) mod file_drop;
+pub(crate) mod ime;
 mod queue;
 pub(crate) mod typed_text;
 pub(crate) mod window;

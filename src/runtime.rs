@@ -109,6 +109,21 @@ pub(crate) fn with<R>(
 /// Thread the runtime was created on, for diagnosing off-thread calls.
 static INITIALIZED: Mutex<Option<ThreadId>> = Mutex::new(None);
 
+/// Runs `f`, which feeds GPUI input from outside TAO's event callback (a
+/// GTK signal handler), under the same reentrancy guard as TAO events.
+/// `None` while GPUI is mid-update, or off the main thread.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub(crate) fn input<R>(f: impl FnOnce() -> R) -> Option<R> {
+    with(|runtime| {
+        Ok((runtime.depth.get() == 0).then(|| {
+            let _guard = runtime.enter();
+            f()
+        }))
+    })
+    .ok()
+    .flatten()
+}
+
 struct DepthGuard<'a>(&'a Cell<usize>);
 
 impl Drop for DepthGuard<'_> {
@@ -346,7 +361,8 @@ impl Runtime {
                 waker.wake();
             }
         });
-        let inner = Rc::new(WindowInner {
+        // The weak handle lets native input-method callbacks reach the window.
+        let inner = Rc::new_cyclic(|_weak| WindowInner {
             label: label.clone(),
             tauri_window: window.clone(),
             raw: Cell::new(raw),
@@ -373,6 +389,8 @@ impl Runtime {
             webviews: RefCell::default(),
             #[cfg(not(gpui_mobile))]
             file_drop: RefCell::default(),
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            ime: crate::platform::ime::linux::Ime::new(window, _weak.clone()),
         });
         #[cfg(all(not(gpui_mobile), any(target_os = "linux", target_os = "freebsd")))]
         crate::platform::file_drop::gtk::install(window, Rc::downgrade(&inner));
@@ -658,6 +676,10 @@ impl Runtime {
                 }
                 #[cfg(not(gpui_mobile))]
                 surface.flush_file_drop();
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                if let Some(ime) = &surface.ime {
+                    ime.flush(surface);
+                }
                 surface.flush_ime_commit();
                 surface.refresh_window_mode();
                 // GPUI is told hidden windows get no frames; keep the request
