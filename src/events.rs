@@ -94,10 +94,17 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             inner.call_bool(|c| &mut c.hover_status_change, false);
         }
         WindowEvent::CursorMoved { position, .. } => {
+            let held = inner.state.borrow().pressed_button.is_some();
+            let corrected = if held {
+                held_pointer_position(inner)
+            } else {
+                None
+            };
             let (position, pressed_button, modifiers) = {
                 let mut state = inner.state.borrow_mut();
-                state.mouse_position =
-                    logical_position(*position, state.scale_factor) - inner.content_origin();
+                state.mouse_position = corrected
+                    .unwrap_or_else(|| logical_position(*position, state.scale_factor))
+                    - inner.content_origin();
                 (state.mouse_position, state.pressed_button, state.modifiers)
             };
             inner.handle_input(PlatformInput::MouseMove(MouseMoveEvent {
@@ -234,6 +241,28 @@ pub(crate) fn appearance(theme: Theme) -> WindowAppearance {
         Theme::Dark => WindowAppearance::Dark,
         _ => WindowAppearance::Light,
     }
+}
+
+/// Where the pointer is in this window while a button is held.
+///
+/// TAO reports the pointer relative to whichever X11 window is under it. A
+/// press in GPUI keeps motion coming to this window as the pointer crosses an
+/// embedded webview (its own X11 child window, see `webview/linux.rs`), but
+/// with the webview's coordinates, so a GPUI drag such as a splitter jumps.
+/// Asked of GDK instead, relative to the toplevel like TAO. Only while a button is
+/// held: otherwise the pointer is over GPUI and TAO's position is right.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn held_pointer_position(inner: &WindowInner) -> Option<gpui::Point<gpui::Pixels>> {
+    use gtk::prelude::*;
+    let window = inner.tauri_window.gtk_window().ok()?.window()?;
+    let pointer = window.display().default_seat()?.pointer()?;
+    let (_, x, y, _) = window.device_position_double(&pointer);
+    Some(point(px(x as f32), px(y as f32)))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+fn held_pointer_position(_inner: &WindowInner) -> Option<gpui::Point<gpui::Pixels>> {
+    None
 }
 
 fn logical_position(position: PhysicalPosition<f64>, scale: f32) -> gpui::Point<gpui::Pixels> {
