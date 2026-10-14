@@ -31,9 +31,9 @@ use tauri_plugin_gpui::{
     GpuiConfig, GpuiError, GpuiOptions, GpuiWindowExt,
     gpui::{
         self, App, AppContext as _, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
-        EntityInputHandler, FocusHandle, Global, InteractiveElement as _, IntoElement,
-        KeyDownEvent, MouseButton, ParentElement as _, Pixels, Render, Styled as _, UTF16Selection,
-        WeakEntity, Window, WindowAppearance, canvas, div,
+        EntityInputHandler, ExternalPaths, FocusHandle, Global, InteractiveElement as _,
+        IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Pixels, Render, Styled as _,
+        UTF16Selection, WeakEntity, Window, WindowAppearance, canvas, div,
     },
 };
 
@@ -57,6 +57,9 @@ struct Probe {
     visible: bool,
     keys: Vec<String>,
     text: String,
+    /// Files dropped onto the probe, and drag moves seen while they hovered.
+    dropped: Vec<std::path::PathBuf>,
+    drag_moves: usize,
     _visibility: gpui::Subscription,
 }
 
@@ -82,6 +85,8 @@ impl Probe {
             visible: window.is_visible(),
             keys: Vec::new(),
             text: String::new(),
+            dropped: Vec::new(),
+            drag_moves: 0,
             _visibility: visibility,
         }
     }
@@ -117,6 +122,10 @@ impl Render for Probe {
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, _| {
                 this.keys.push(event.keystroke.key.clone());
+            }))
+            .on_drag_move::<ExternalPaths>(cx.listener(|this, _, _, _| this.drag_moves += 1))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, _| {
+                this.dropped.extend(paths.paths().iter().cloned());
             }))
             .child(format!("renders: {} text: {}", self.renders, self.text))
             .child(
@@ -230,6 +239,8 @@ struct Seen {
     visible: bool,
     keys: Vec<String>,
     text: String,
+    dropped: Vec<std::path::PathBuf>,
+    drag_moves: usize,
 }
 
 fn attach_probe(window: &tauri::Window<Wry>) -> Result<(), GpuiError> {
@@ -387,6 +398,8 @@ impl Harness {
                 visible: p.visible,
                 keys: p.keys.clone(),
                 text: p.text.clone(),
+                dropped: p.dropped.clone(),
+                drag_moves: p.drag_moves,
             })
         })
     }
@@ -1433,6 +1446,123 @@ fn input_chaos(h: &mut Harness) {
     h.window_gone(&label);
 }
 
+/// A GTK drag source in another process, so the drop goes through XDND.
+const DRAG_SOURCE: &str = r#"
+import sys, gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, Gdk
+uri = sys.argv[1]
+window = Gtk.Window(title="drag-source")
+window.set_default_size(160, 120)
+window.move(1300, 700)
+box = Gtk.EventBox()
+box.add(Gtk.Label(label="drag me"))
+box.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, [Gtk.TargetEntry.new("text/uri-list", 0, 0)], Gdk.DragAction.COPY)
+box.connect("drag-data-get", lambda w, c, data, i, t: data.set_uris([uri]))
+box.connect("drag-end", lambda *a: print("drag-end", flush=True))
+window.add(box)
+window.connect("destroy", Gtk.main_quit)
+window.show_all()
+print("ready", flush=True)
+Gtk.main()
+"#;
+
+/// Python 3 with PyGObject (GTK 3), which may not be the default `python3`.
+fn python_with_gtk() -> Option<&'static str> {
+    ["python3", "python3.12", "python3.11", "python3.13"]
+        .into_iter()
+        .find(|python| {
+            Command::new(python)
+                .args(["-c", "import gi; gi.require_version('Gtk', '3.0')"])
+                .output()
+                .is_ok_and(|out| out.status.success())
+        })
+}
+
+/// A real XDND drag of a file from another app onto a GPUI window.
+fn file_drop(h: &mut Harness) {
+    let python = python_with_gtk();
+    if !h.has_wm || xdotool(&["version"]).is_err() || python.is_none() {
+        h.check(
+            "file drop",
+            true,
+            "skipped: needs xdotool, a window manager and python3-gi",
+        );
+        return;
+    }
+    let file = std::env::temp_dir().join(format!("chaos-drop-{}.txt", std::process::id()));
+    std::fs::write(&file, "dropped").unwrap();
+    let uri = format!("file://{}", file.display());
+    let mut source = Command::new(python.unwrap())
+        .args(["-c", DRAG_SOURCE, &uri])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn drag source");
+
+    let label = h.open_probe("drop", (500., 400.));
+    h.rendered(&label);
+    let source_xid = (0..50).find_map(|_| {
+        thread::sleep(Duration::from_millis(100));
+        h.xid("drag-source")
+    });
+    let (Some(source_xid), Some(xid)) = (source_xid, h.xid(&label)) else {
+        h.check("drag source and target found by xdotool", false, "");
+        source.kill().ok();
+        source.wait().ok();
+        return;
+    };
+    xdotool(&["windowactivate", "--sync", &source_xid]).ok();
+    thread::sleep(Duration::from_millis(300));
+    xdotool(&["mousemove", "--window", &source_xid, "80", "60"]).unwrap();
+    xdotool(&["mousedown", "1"]).unwrap();
+    // GTK starts a drag after the pointer moves past its threshold.
+    for step in 1..=10 {
+        xdotool(&[
+            "mousemove",
+            "--window",
+            &source_xid,
+            &(80 + step * 4).to_string(),
+            "60",
+        ])
+        .ok();
+        thread::sleep(Duration::from_millis(20));
+    }
+    for (x, y) in [(100, 100), (200, 150), (250, 200), (260, 210)] {
+        xdotool(&[
+            "mousemove",
+            "--window",
+            &xid,
+            &x.to_string(),
+            &y.to_string(),
+        ])
+        .ok();
+        thread::sleep(Duration::from_millis(150));
+    }
+    xdotool(&["mouseup", "1"]).unwrap();
+
+    let l = label.clone();
+    let dropped = h.wait(Duration::from_secs(5), |h| {
+        h.seen(&l).is_some_and(|s| !s.dropped.is_empty())
+    });
+    let seen = h.seen(&label).unwrap_or_default();
+    h.check(
+        "a file dragged from another app is dropped on GPUI with its path",
+        dropped && seen.dropped == [file.clone()],
+        format!("dropped = {:?}", seen.dropped),
+    );
+    h.check(
+        "drag moves reach GPUI while the file hovers",
+        seen.drag_moves > 0,
+        format!("drag moves = {}", seen.drag_moves),
+    );
+
+    source.kill().ok();
+    source.wait().ok();
+    std::fs::remove_file(&file).ok();
+    h.close(&label);
+    h.window_gone(&label);
+}
+
 /// Hidden windows keep their GPUI surface and repaint when shown again.
 fn hide_show(h: &mut Harness) {
     let label = h.open_probe("hide", (300., 200.));
@@ -2021,6 +2151,7 @@ fn run(app: AppHandle<Wry>, seed: u64) {
         ("clipboard", clipboard),
         ("thread_hammer", thread_hammer),
         ("input_chaos", input_chaos),
+        ("file_drop", file_drop),
         ("hide_show", hide_show),
         ("minimize", minimize),
         ("displays", displays),

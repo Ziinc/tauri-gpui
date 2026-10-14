@@ -15,7 +15,7 @@ Tauri/TAO keeps ownership of the application lifecycle, the event loop and nativ
 - **Mix and match:** GPUI-backed windows and ordinary WebView windows run side by side in one app.
 - **One shared `App`:** every attached window shares a single GPUI `App`, so entities, globals and state are shared.
 - **Component libraries work:** [gpui-kit](https://crates.io/crates/gpui-kit) / gpui-component via `attach_gpui_view`.
-- **Full input:** mouse, wheel, keyboard with repeat, modifiers, IME commit text, focus, resize and scale-factor changes.
+- **Full input:** mouse, wheel, keyboard with repeat, modifiers, IME commit text, file drops from other apps, focus, resize and scale-factor changes.
 - **Demand-driven redraw:** an idle app uses 0% CPU.
 - **Clean teardown:** destroying a Tauri window tears down its GPUI root, renderer and surface.
 
@@ -77,9 +77,11 @@ fn main() {
 
 ### Event coverage
 
-Handled: resize, scale-factor change, move, focus, minimize/restore (reported to GPUI as window visibility; minimized windows get no frames), cursor enter/leave/move, mouse buttons with click counting (back/forward buttons map to GPUI navigation; other extra buttons are ignored), mouse wheel (line and pixel deltas), keyboard down/up with repeat, modifier and caps-lock state, IME commit text, theme change (including GTK's application-wide theme change, which TAO reports without a window id), close requests (GPUI can veto) and destroy (teardown).
+Handled: resize, scale-factor change, move, focus, minimize/restore (reported to GPUI as window visibility; minimized windows get no frames), cursor enter/leave/move, mouse buttons with click counting (back/forward buttons map to GPUI navigation; other extra buttons are ignored), mouse wheel (line and pixel deltas), keyboard down/up with repeat, modifier and caps-lock state, IME commit text, files dragged in from other apps, theme change (including GTK's application-wide theme change, which TAO reports without a window id), close requests (GPUI can veto) and destroy (teardown).
 
 `RedrawRequested` forces a present.
+
+Files dragged onto a window from another app reach GPUI's `on_drop::<ExternalPaths>` and `on_drag_move::<ExternalPaths>` handlers. On Linux the window is a GTK drag destination for `text/uri-list`, so GPUI sees the pointer move while files hover. On macOS and Windows TAO reports the drag without positions, so the plugin reads the pointer position when the files enter and when they are dropped, and drop targets do not see moves in between.
 
 TAO has no maximize/fullscreen events, so that state is re-read from Tauri at attach and on every resize and move; GPUI's `is_maximized`, `is_fullscreen` and `window_bounds` follow changes made through Tauri or the window manager.
 

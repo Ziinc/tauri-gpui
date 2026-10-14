@@ -144,6 +144,9 @@ pub(crate) struct WindowInner {
     /// Child webviews placed by `webview_frame`, keyed by webview label.
     #[cfg(not(gpui_mobile))]
     pub webviews: RefCell<std::collections::HashMap<String, crate::webview::EmbeddedWebview>>,
+    /// Files being dragged onto the window from other apps.
+    #[cfg(not(gpui_mobile))]
+    pub file_drop: RefCell<super::file_drop::FileDrop>,
 }
 
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
@@ -219,6 +222,55 @@ impl WindowInner {
             // Inserted on the next drain unless a key press claims it first.
             self.waker.wake();
         }
+    }
+
+    /// Hands GPUI the file drag steps gathered since the last drain.
+    #[cfg(not(gpui_mobile))]
+    pub fn flush_file_drop(&self) {
+        use super::file_drop::DropStep;
+        use gpui::{ExternalPaths, FileDropEvent};
+
+        let (tao_steps, queued) = {
+            let mut file_drop = self.file_drop.borrow_mut();
+            let tao_steps = file_drop.has_tao_events().then(|| file_drop.take_tao());
+            (tao_steps, file_drop.take_queued())
+        };
+        let mut steps: Vec<_> = queued.into_iter().collect();
+        if let Some(tao_steps) = tao_steps {
+            // TAO's drag events carry no position: use the pointer's.
+            let position = self.cursor_position();
+            steps.extend(tao_steps.into_iter().map(|step| (step, position)));
+        }
+        for (step, position) in steps {
+            self.state.borrow_mut().mouse_position = position;
+            let event = match step {
+                DropStep::Entered(paths) => FileDropEvent::Entered {
+                    position,
+                    paths: ExternalPaths(paths.into()),
+                },
+                DropStep::Pending => FileDropEvent::Pending { position },
+                DropStep::Submit => FileDropEvent::Submit { position },
+                DropStep::Exited => FileDropEvent::Exited,
+            };
+            self.handle_input(PlatformInput::FileDrop(event));
+        }
+    }
+
+    /// The pointer in window coordinates, asked of the OS (it moves without
+    /// window events while another app drags files over the window).
+    #[cfg(not(gpui_mobile))]
+    fn cursor_position(&self) -> Point<Pixels> {
+        let window = &self.tauri_window;
+        let queried = (|| {
+            let cursor = window.cursor_position().ok()?;
+            let origin = window.inner_position().ok()?;
+            let scale = self.state.borrow().scale_factor as f64;
+            Some(gpui::point(
+                px(((cursor.x - origin.x as f64) / scale) as f32),
+                px(((cursor.y - origin.y as f64) / scale) as f32),
+            ))
+        })();
+        queried.unwrap_or_else(|| self.state.borrow().mouse_position)
     }
 
     /// Inserts an IME commit no key press claimed.

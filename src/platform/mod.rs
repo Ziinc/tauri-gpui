@@ -10,6 +10,8 @@ pub(crate) mod clipboard;
 #[path = "clipboard_mobile.rs"]
 pub(crate) mod clipboard;
 pub(crate) mod dispatcher;
+#[cfg(not(gpui_mobile))]
+pub(crate) mod file_drop;
 mod queue;
 pub(crate) mod typed_text;
 pub(crate) mod window;

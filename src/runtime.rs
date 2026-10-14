@@ -371,7 +371,11 @@ impl Runtime {
             defer,
             #[cfg(not(gpui_mobile))]
             webviews: RefCell::default(),
+            #[cfg(not(gpui_mobile))]
+            file_drop: RefCell::default(),
         });
+        #[cfg(all(not(gpui_mobile), any(target_os = "linux", target_os = "freebsd")))]
+        crate::platform::file_drop::gtk::install(window, Rc::downgrade(&inner));
         // The window may have been built maximized, fullscreen or minimized.
         inner.sync_window_mode();
         inner.reported_visible.set(inner.state.borrow().visible);
@@ -652,6 +656,8 @@ impl Runtime {
                 if surface.closed.get() {
                     continue;
                 }
+                #[cfg(not(gpui_mobile))]
+                surface.flush_file_drop();
                 surface.flush_ime_commit();
                 surface.refresh_window_mode();
                 // GPUI is told hidden windows get no frames; keep the request
