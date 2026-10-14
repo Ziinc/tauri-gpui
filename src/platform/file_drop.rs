@@ -15,6 +15,8 @@ use gpui::{Pixels, Point};
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DropStep {
     Entered(Vec<PathBuf>),
+    /// Only GTK reports moves while files hover.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "freebsd")), allow(dead_code))]
     Pending,
     Submit,
     Exited,
