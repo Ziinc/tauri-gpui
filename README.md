@@ -15,7 +15,7 @@ Tauri/TAO keeps ownership of the application lifecycle, the event loop and nativ
 - **Mix and match:** GPUI-backed windows and ordinary WebView windows run side by side in one app.
 - **One shared `App`:** every attached window shares a single GPUI `App`, so entities, globals and state are shared.
 - **Component libraries work:** [gpui-kit](https://crates.io/crates/gpui-kit) / gpui-component via `attach_gpui_view`.
-- **Full input:** mouse, wheel, keyboard with repeat, modifiers, IME commit text, file drops from other apps, focus, resize and scale-factor changes.
+- **Full input:** mouse, wheel, keyboard with repeat, modifiers, input methods (composition in place on Linux, see [Input methods](#input-methods)), file drops from other apps, focus, resize and scale-factor changes.
 - **Demand-driven redraw:** an idle app uses 0% CPU.
 - **Clean teardown:** destroying a Tauri window tears down its GPUI root, renderer and surface.
 
@@ -77,7 +77,7 @@ fn main() {
 
 ### Event coverage
 
-Handled: resize, scale-factor change, move, focus, minimize/restore (reported to GPUI as window visibility; minimized windows get no frames), cursor enter/leave/move, mouse buttons with click counting (back/forward buttons map to GPUI navigation; other extra buttons are ignored), mouse wheel (line and pixel deltas), keyboard down/up with repeat, modifier and caps-lock state, IME commit text, files dragged in from other apps, theme change (including GTK's application-wide theme change, which TAO reports without a window id), close requests (GPUI can veto) and destroy (teardown).
+Handled: resize, scale-factor change, move, focus, minimize/restore (reported to GPUI as window visibility; minimized windows get no frames), cursor enter/leave/move, mouse buttons with click counting (back/forward buttons map to GPUI navigation; other extra buttons are ignored), mouse wheel (line and pixel deltas), keyboard down/up with repeat, modifier and caps-lock state, IME commit text (and, on Linux, IME composition), files dragged in from other apps, theme change (including GTK's application-wide theme change, which TAO reports without a window id), close requests (GPUI can veto) and destroy (teardown).
 
 `RedrawRequested` forces a present.
 
@@ -86,6 +86,18 @@ Files dragged onto a window from another app reach GPUI's `on_drop::<ExternalPat
 TAO has no maximize/fullscreen events, so that state is re-read from Tauri at attach and on every resize and move; GPUI's `is_maximized`, `is_fullscreen` and `window_bounds` follow changes made through Tauri or the window manager.
 
 Keystrokes follow GPUI naming (`enter`, `left`, `f5`, lowercase characters). `key_char` comes from TAO's shift-aware logical key. When a TAO backend sends the same typed character twice (once as a key press, once as an IME commit, in either order), it is inserted once, through the key press. Option on macOS and AltGr on Windows (reported as Ctrl+Alt) type characters; Ctrl, Cmd/Super and (outside macOS) Alt make a key a shortcut.
+
+### Input methods
+
+TAO reports only the text an input method commits, and Tauri keeps TAO's window (and with it TAO's `set_ime_position`) private, so the plugin talks to the native input method itself where it can:
+
+| OS | Composition | Candidate window |
+|---|---|---|
+| Linux | While a GPUI text input has focus, keys go to a `GtkIMMulticontext` on the window first, so the system input method (IBus, Fcitx, XIM, or GTK's compose tables, Ctrl+Shift+U and dead keys) composes in place: its preedit becomes GPUI marked text (`replace_and_mark_text_in_range`, with the caret inside it), its commit replaces that, and the end of a composition calls `unmark_text`. Keys the input method takes never reach TAO. Keys it passes on, and plain characters it would only type, go through TAO as before, so GPUI key bindings see them. | Placed at GPUI's caret (`update_ime_position`, and after every preedit change). |
+| Windows | The IME draws its own composition window; GPUI receives the committed text. | The composition and candidate windows are placed at GPUI's caret through IMM32 on the window's `HWND`. |
+| macOS | TAO's view composes marked text without reporting it; GPUI receives the committed text. | Not supported: TAO's view answers `firstRectForCharacterRange:` with a position only `tao::Window::set_ime_position` can set, so candidates appear at the window's top-left corner. |
+
+GTK chooses the input method as usual (`GTK_IM_MODULE`, then the desktop's setting). Without a focused GPUI text input, keys go straight to TAO.
 
 ## Minimal platform adapter: Phase 0 findings
 
@@ -105,7 +117,7 @@ Everything else does one of three things:
 - **Explicitly unsupported:** these return `GpuiError::UnsupportedOperation` through `anyhow`, or are logged at debug level when the GPUI signature has no error channel.
   - Windows: `open_window` outside `attach_gpui`, non-normal window kinds, background appearance (blur/transparency).
   - System integration: credentials, menus and dock menus, path prompts (use `tauri-plugin-dialog`), `open_url` (use `tauri-plugin-opener`), URL schemes, `reveal_path`/`open_with_system`, app hide/unhide, idle-sleep prevention.
-  - Input and accessibility: IME candidate positioning, accessibility (AccessKit).
+  - Input and accessibility: IME candidate positioning on macOS, accessibility (AccessKit).
 - **Handled by GPUI's built-in fallback:** prompts (`PlatformWindow::prompt` returns `None`).
 
 ## Embedding a webview in a GPUI window (experimental)
@@ -267,7 +279,8 @@ With `GPUI_DEMO_AUTOTEST=<dir>` set, the demo:
 - close handling (Tauri `prevent_close`, `destroy`) and `cx.quit()` routed through Tauri's `ExitRequested`;
 - Tauri events, managed state, `on_window_event`, `async_runtime` and `run_on_main_thread` used together with GPUI; GPUI timers, background tasks and floods of 20k foreground tasks;
 - the clipboard shared with `tauri-plugin-clipboard-manager`;
-- 600 cross-thread calls while windows churn, and random real X11 keyboard/mouse input via `xdotool` (typed text must arrive exactly once).
+- 600 cross-thread calls while windows churn, and random real X11 keyboard/mouse input via `xdotool` (typed text must arrive exactly once);
+- input-method composition through GTK's built-in input method (selected unless `GTK_IM_MODULE` is set): a Ctrl+Shift+U preedit must reach GPUI as marked text, its commit replace it, Escape cancel it, a dead key compose once, and plain keys and shortcuts still arrive as keys.
 
 ```sh
 # needs: Xvfb, openbox, xdotool, a Vulkan driver; prints its seed
@@ -275,12 +288,14 @@ scripts/chaos-test.sh
 CHAOS_SEED=42 CHAOS_ONLY=lifecycle_storm,clipboard scripts/chaos-test.sh
 ```
 
+`CHAOS_ONLY=ime_pinyin` types pinyin through a real IBus engine and is not part of the default run: start `ibus-daemon`, select `ibus engine libpinyin` and set `GTK_IM_MODULE=ibus` first.
+
 Without a display, `cargo test` skips the suite.
 
 ## Remaining open questions
 
 - GPUI versioning: the crate tracks the `gpui-pre` snapshots, the same ones gpui-kit tracks, until upstream publishes a `gpui` with a public `Platform`.
-- IME positioning: it has no Tauri core API and would need a TAO change.
+- Input methods on macOS and Windows: showing the composition inside GPUI (and, on macOS, placing the candidate window) needs TAO to report preedit and Tauri to expose IME positioning. The Linux path is verified under Xvfb (GTK's built-in input method and IBus with libpinyin), the Windows path only compile-checked, and Wayland is untested.
 - Accessibility (AccessKit through Tauri windows).
 - Building and testing on macOS and Windows.
 - Android: IME composition beyond committed text, multiple GPUI windows, and accessibility.
