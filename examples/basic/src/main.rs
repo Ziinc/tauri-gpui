@@ -1,9 +1,10 @@
 //! Minimal tauri-plugin-gpui app: one Tauri window rendered by plain GPUI,
-//! with no component library. A counter shows state and pointer input.
+//! with no component library. A counter shows state and pointer input; its
+//! roles and labels reach screen readers (`scripts/a11y-test.sh` reads them).
 
 use tauri_plugin_gpui::{
     GpuiWindowExt,
-    gpui::{self, prelude::*, px, rgb},
+    gpui::{self, Role, prelude::*, px, rgb},
 };
 
 struct Counter {
@@ -23,17 +24,26 @@ impl Render for Counter {
             .text_color(rgb(0xcdd6f4))
             .child(
                 gpui::div()
+                    .id("title")
+                    .role(Role::Heading)
+                    .aria_label("Hello from GPUI in a Tauri window")
                     .text_xl()
                     .child("Hello from GPUI in a Tauri window"),
             )
             .child(
                 gpui::div()
+                    .id("count")
+                    // A label's text is its value in AccessKit.
+                    .role(Role::Label)
+                    .aria_value(format!("Count: {}", self.count))
                     .text_size(px(48.))
                     .child(format!("{}", self.count)),
             )
             .child(
                 gpui::div()
                     .id("increment")
+                    .role(Role::Button)
+                    .aria_label("Click me")
                     .px_4()
                     .py_2()
                     .rounded_md()

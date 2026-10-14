@@ -16,6 +16,7 @@ Tauri/TAO keeps ownership of the application lifecycle, the event loop and nativ
 - **One shared `App`:** every attached window shares a single GPUI `App`, so entities, globals and state are shared.
 - **Component libraries work:** [gpui-kit](https://crates.io/crates/gpui-kit) / gpui-component via `attach_gpui_view`.
 - **Full input:** mouse, wheel, keyboard with repeat, modifiers, input methods (composition in place on Linux, see [Input methods](#input-methods)), file drops from other apps, focus, resize and scale-factor changes.
+- **Screen readers (desktop):** GPUI's AccessKit tree (`role`, `aria_label`, …) reaches AT-SPI, VoiceOver and UI Automation. See [Accessibility](#accessibility).
 - **Demand-driven redraw:** an idle app uses 0% CPU.
 - **Clean teardown:** destroying a Tauri window tears down its GPUI root, renderer and surface.
 
@@ -73,6 +74,7 @@ fn main() {
 | Rendering | `gpui_wgpu::WgpuRenderer` is built on the Tauri window's raw window and display handles (Vulkan/GL on Linux, Metal on macOS, DX12 on Windows). Text uses `gpui_wgpu::CosmicTextSystem`. |
 | Redraw | Demand-driven. GPUI's `frame_waker`/`schedule_frame` set a per-window flag and wake TAO. Pending frames are delivered at `MainEventsCleared`. TAO `RedrawRequested` (expose, resize) forces a present. An idle app uses 0% CPU. |
 | Input | TAO `WindowEvent` is translated to GPUI `PlatformInput` (see below). |
+| Accessibility | GPUI builds an AccessKit tree while assistive technology is listening. The window hands it to `accesskit_unix` (Linux), `accesskit_macos` (macOS) or `accesskit_windows` (Windows). See [Accessibility](#accessibility). |
 | Window management from GPUI | `set_title`, `activate`, `minimize`, `zoom`, `toggle_fullscreen`, `resize` and cursor styles are forwarded to the Tauri `Window` API and run outside GPUI updates. |
 
 ### Event coverage
@@ -117,8 +119,28 @@ Everything else does one of three things:
 - **Explicitly unsupported:** these return `GpuiError::UnsupportedOperation` through `anyhow`, or are logged at debug level when the GPUI signature has no error channel.
   - Windows: `open_window` outside `attach_gpui`, non-normal window kinds, background appearance (blur/transparency).
   - System integration: credentials, menus and dock menus, path prompts (use `tauri-plugin-dialog`), `open_url` (use `tauri-plugin-opener`), URL schemes, `reveal_path`/`open_with_system`, app hide/unhide, idle-sleep prevention.
-  - Input and accessibility: IME candidate positioning on macOS, accessibility (AccessKit).
+  - Input: IME candidate positioning on macOS.
 - **Handled by GPUI's built-in fallback:** prompts (`PlatformWindow::prompt` returns `None`).
+
+## Accessibility
+
+GPUI builds an [AccessKit](https://accesskit.dev) tree from the roles, labels, values and actions views declare (`.role(Role::Button)`, `.aria_label(…)`, `.on_a11y_action(…)`; see GPUI's `examples/a11y.rs`), but only while assistive technology is listening. The plugin passes the tree to the OS accessibility API of each attached window, using the AccessKit adapter versions GPUI's own platforms use:
+
+| OS | Adapter | How it hooks into the Tauri window | Status |
+|---|---|---|---|
+| Linux | `accesskit_unix` 0.22 (AT-SPI over D-Bus) | No native hook; the adapter registers the window on the AT-SPI bus from its own thread. The plugin reports the window's outer and inner screen rectangles (read from Tauri after every move and resize) so element positions are correct, and its focus. | **Verified on X11** by `scripts/a11y-test.sh` (below). Wayland builds; there AT-SPI cannot know where the window is. |
+| macOS | `accesskit_macos` 0.26 (NSAccessibility) | `SubclassingAdapter` on TAO's content `NSView`, restored when the window is destroyed. Focus follows TAO's `Focused` events. | Compiles (CI clippy); **not run against VoiceOver yet**. |
+| Windows | `accesskit_windows` 0.34 (UI Automation) | A comctl32 window subclass (`SetWindowSubclass`) on TAO's `HWND` answers `WM_GETOBJECT`. AccessKit's own `SubclassingAdapter` is not used because it refuses windows that are already visible. | Compiles (CI clippy); **not run against Narrator/NVDA yet**. |
+| Android, iOS | none | | Not supported. |
+
+Actions a screen reader requests (click, focus, increment, …) are queued to GPUI like any other task and wake the event loop. The window's accessible name is its Tauri title at attach time, and GPUI's `window.set_window_title` keeps it current; titles set through Tauri afterwards are not seen. AccessKit is always compiled in on desktop: gpui-kit apps already build the same adapters through GPUI's own platform crates.
+
+[`examples/basic`](examples/basic) labels its heading, counter and button. The check runs it on Xvfb inside a private session D-Bus with the AT-SPI bus, then reads the tree with PyGObject's `Atspi`, checks the button's screen position before and after moving the window, and clicks it through AT-SPI:
+
+```sh
+# needs: Xvfb, openbox, xdotool, dbus, at-spi2-core, python3-gi with gir1.2-atspi-2.0, a Vulkan driver
+scripts/a11y-test.sh
+```
 
 ## Embedding a webview in a GPUI window (experimental)
 
@@ -296,7 +318,7 @@ Without a display, `cargo test` skips the suite.
 
 - GPUI versioning: the crate tracks the `gpui-pre` snapshots, the same ones gpui-kit tracks, until upstream publishes a `gpui` with a public `Platform`.
 - Input methods on macOS and Windows: showing the composition inside GPUI (and, on macOS, placing the candidate window) needs TAO to report preedit and Tauri to expose IME positioning. The Linux path is verified under Xvfb (GTK's built-in input method and IBus with libpinyin), the Windows path only compile-checked, and Wayland is untested.
-- Accessibility (AccessKit through Tauri windows).
+- Accessibility on macOS and Windows: implemented and compiled, but not yet tried with VoiceOver, Narrator or NVDA.
 - Building and testing on macOS and Windows.
 - Android: IME composition beyond committed text, multiple GPUI windows, and accessibility.
 - iOS: running on a physical device, a real IME keyboard (CI scripts the `UITextInput` calls instead), CJK fonts (only the UI, monospace and emoji fonts are loaded, so CJK text needs an app-supplied font), multiple GPUI windows, and accessibility.
