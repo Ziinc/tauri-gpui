@@ -3,10 +3,12 @@
 
 use std::{
     collections::VecDeque,
-    sync::{Condvar, Mutex},
+    sync::{Condvar, Mutex, PoisonError},
 };
 
 use gpui::Priority;
+
+use crate::ffi::lock;
 
 pub(crate) struct PriorityQueue<T> {
     /// High, medium and low priority items, popped in that order.
@@ -35,23 +37,26 @@ fn index(priority: Priority) -> usize {
 
 impl<T> PriorityQueue<T> {
     pub(crate) fn push(&self, priority: Priority, item: T) {
-        self.queues.lock().unwrap()[index(priority)].push_back(item);
+        lock(&self.queues)[index(priority)].push_back(item);
         self.condvar.notify_one();
     }
 
     pub(crate) fn try_pop(&self) -> Option<T> {
-        let mut queues = self.queues.lock().unwrap();
+        let mut queues = lock(&self.queues);
         queues.iter_mut().find_map(VecDeque::pop_front)
     }
 
     /// Blocks until an item is available.
     pub(crate) fn pop(&self) -> T {
-        let mut queues = self.queues.lock().unwrap();
+        let mut queues = lock(&self.queues);
         loop {
             if let Some(item) = queues.iter_mut().find_map(VecDeque::pop_front) {
                 return item;
             }
-            queues = self.condvar.wait(queues).unwrap();
+            queues = self
+                .condvar
+                .wait(queues)
+                .unwrap_or_else(PoisonError::into_inner);
         }
     }
 }

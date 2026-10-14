@@ -13,7 +13,7 @@ pub(crate) mod selection;
 use std::{
     collections::VecDeque,
     ffi::c_void,
-    sync::{Arc, Condvar, Mutex, OnceLock},
+    sync::{Arc, Condvar, Mutex, OnceLock, PoisonError},
     time::Duration,
 };
 
@@ -25,6 +25,7 @@ use jni::{
 };
 use ndk::native_window::NativeWindow;
 
+use crate::ffi::{self, lock};
 use crate::platform::dispatcher::LoopWaker;
 
 /// How long `surfaceDestroyed` waits for the renderer to release the surface.
@@ -101,16 +102,16 @@ pub(crate) struct Released {
 
 impl Released {
     pub(crate) fn signal(&self) {
-        *self.done.lock().unwrap() = true;
+        *lock(&self.done) = true;
         self.condvar.notify_all();
     }
 
     fn wait(&self) {
-        let done = self.done.lock().unwrap();
+        let done = lock(&self.done);
         let (_done, timeout) = self
             .condvar
             .wait_timeout_while(done, SURFACE_RELEASE_TIMEOUT, |done| !*done)
-            .unwrap();
+            .unwrap_or_else(PoisonError::into_inner);
         if timeout.timed_out() {
             log::warn!(
                 "tauri-plugin-gpui: timed out waiting for the renderer to release the surface"
@@ -137,7 +138,7 @@ static DENSITY: Mutex<f32> = Mutex::new(1.0);
 static DARK: Mutex<bool> = Mutex::new(false);
 
 fn push(event: ViewEvent) -> bool {
-    let mut queue = QUEUE.lock().unwrap();
+    let mut queue = lock(&QUEUE);
     queue.events.push_back(event);
     match &queue.waker {
         Some(waker) => {
@@ -150,7 +151,7 @@ fn push(event: ViewEvent) -> bool {
 
 /// Connects the queue to the event loop once the GPUI runtime exists.
 pub(crate) fn set_waker(waker: Arc<LoopWaker>) {
-    let mut queue = QUEUE.lock().unwrap();
+    let mut queue = lock(&QUEUE);
     if !queue.events.is_empty() {
         waker.wake();
     }
@@ -158,22 +159,22 @@ pub(crate) fn set_waker(waker: Arc<LoopWaker>) {
 }
 
 pub(crate) fn take_events() -> VecDeque<ViewEvent> {
-    std::mem::take(&mut QUEUE.lock().unwrap().events)
+    std::mem::take(&mut lock(&QUEUE).events)
 }
 
 pub(crate) fn density() -> f32 {
-    *DENSITY.lock().unwrap()
+    *lock(&DENSITY)
 }
 
 pub(crate) fn is_dark() -> bool {
-    *DARK.lock().unwrap()
+    *lock(&DARK)
 }
 
 // Calls into the view, from the event-loop thread.
 
 fn with_view(name: &str, f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<()>) {
     let Some(vm) = VM.get() else { return };
-    let Some(view) = VIEW.lock().unwrap().clone() else {
+    let Some(view) = lock(&VIEW).clone() else {
         return;
     };
     let mut env = match vm.attach_current_thread_as_daemon() {
@@ -422,16 +423,18 @@ pub(crate) fn register_natives(env: &mut JNIEnv, activity: &JObject) -> jni::err
 // Natives. All run on the Android UI thread.
 
 extern "system" fn native_attach(env: JNIEnv, _: JClass, view: JObject, density: jfloat) {
-    if let Ok(vm) = env.get_java_vm() {
-        let _ = VM.set(vm);
-    }
-    match env.new_global_ref(view) {
-        Ok(view) => *VIEW.lock().unwrap() = Some(view),
-        Err(error) => {
-            log::error!("tauri-plugin-gpui: cannot keep a reference to GpuiView: {error}")
+    ffi::callback("native_attach", (), || {
+        if let Ok(vm) = env.get_java_vm() {
+            let _ = VM.set(vm);
         }
-    }
-    *DENSITY.lock().unwrap() = density;
+        match env.new_global_ref(view) {
+            Ok(view) => *lock(&VIEW) = Some(view),
+            Err(error) => {
+                log::error!("tauri-plugin-gpui: cannot keep a reference to GpuiView: {error}")
+            }
+        }
+        *lock(&DENSITY) = density;
+    })
 }
 
 extern "system" fn native_surface_changed(
@@ -442,30 +445,36 @@ extern "system" fn native_surface_changed(
     height: jint,
     density: jfloat,
 ) {
-    // SAFETY: `surface` is a live android.view.Surface for this call.
-    let window = unsafe { NativeWindow::from_surface(env.get_raw(), surface.as_raw()) };
-    let Some(window) = window else {
-        log::error!("tauri-plugin-gpui: ANativeWindow_fromSurface returned null");
-        return;
-    };
-    *DENSITY.lock().unwrap() = density;
-    push(ViewEvent::SurfaceChanged {
-        window,
-        width: width.max(1) as u32,
-        height: height.max(1) as u32,
-        density,
-    });
+    ffi::callback("native_surface_changed", (), || {
+        // SAFETY: `surface` is a live android.view.Surface for this call.
+        let window = unsafe { NativeWindow::from_surface(env.get_raw(), surface.as_raw()) };
+        let Some(window) = window else {
+            log::error!("tauri-plugin-gpui: ANativeWindow_fromSurface returned null");
+            return;
+        };
+        *lock(&DENSITY) = density;
+        push(ViewEvent::SurfaceChanged {
+            window,
+            width: width.max(1) as u32,
+            height: height.max(1) as u32,
+            density,
+        });
+    })
 }
 
 extern "system" fn native_surface_destroyed(_: JNIEnv, _: JClass) {
-    let released = Arc::new(Released::default());
-    if push(ViewEvent::SurfaceDestroyed(released.clone())) {
-        released.wait();
-    }
+    ffi::callback("native_surface_destroyed", (), || {
+        let released = Arc::new(Released::default());
+        if push(ViewEvent::SurfaceDestroyed(released.clone())) {
+            released.wait();
+        }
+    })
 }
 
 extern "system" fn native_touch(_: JNIEnv, _: JClass, phase: jint, id: jint, x: jfloat, y: jfloat) {
-    push(ViewEvent::Touch { phase, id, x, y });
+    ffi::callback("native_touch", (), || {
+        push(ViewEvent::Touch { phase, id, x, y });
+    })
 }
 
 extern "system" fn native_key(
@@ -477,13 +486,15 @@ extern "system" fn native_key(
     meta: jint,
     repeat: jint,
 ) {
-    push(ViewEvent::Key {
-        down: down != 0,
-        key_code,
-        unicode,
-        meta,
-        repeat: repeat > 0,
-    });
+    ffi::callback("native_key", (), || {
+        push(ViewEvent::Key {
+            down: down != 0,
+            key_code,
+            unicode,
+            meta,
+            repeat: repeat > 0,
+        });
+    })
 }
 
 fn string(env: &mut JNIEnv, text: &JString) -> Option<String> {
@@ -491,26 +502,34 @@ fn string(env: &mut JNIEnv, text: &JString) -> Option<String> {
 }
 
 extern "system" fn native_commit_text(mut env: JNIEnv, _: JClass, text: JString) {
-    if let Some(text) = string(&mut env, &text) {
-        push(ViewEvent::CommitText(text));
-    }
+    ffi::callback("native_commit_text", (), || {
+        if let Some(text) = string(&mut env, &text) {
+            push(ViewEvent::CommitText(text));
+        }
+    })
 }
 
 extern "system" fn native_set_composing_text(mut env: JNIEnv, _: JClass, text: JString) {
-    if let Some(text) = string(&mut env, &text) {
-        push(ViewEvent::ComposingText(text));
-    }
+    ffi::callback("native_set_composing_text", (), || {
+        if let Some(text) = string(&mut env, &text) {
+            push(ViewEvent::ComposingText(text));
+        }
+    })
 }
 
 extern "system" fn native_finish_composing_text(_: JNIEnv, _: JClass) {
-    push(ViewEvent::FinishComposing);
+    ffi::callback("native_finish_composing_text", (), || {
+        push(ViewEvent::FinishComposing);
+    })
 }
 
 extern "system" fn native_delete_surrounding_text(_: JNIEnv, _: JClass, before: jint, after: jint) {
-    push(ViewEvent::DeleteSurrounding {
-        before: before.max(0) as usize,
-        after: after.max(0) as usize,
-    });
+    ffi::callback("native_delete_surrounding_text", (), || {
+        push(ViewEvent::DeleteSurrounding {
+            before: before.max(0) as usize,
+            after: after.max(0) as usize,
+        });
+    })
 }
 
 extern "system" fn native_insets(
@@ -522,42 +541,56 @@ extern "system" fn native_insets(
     bottom: jint,
     ime_bottom: jint,
 ) {
-    push(ViewEvent::Insets {
-        left,
-        top,
-        right,
-        bottom,
-        ime_bottom,
-    });
+    ffi::callback("native_insets", (), || {
+        push(ViewEvent::Insets {
+            left,
+            top,
+            right,
+            bottom,
+            ime_bottom,
+        });
+    })
 }
 
 extern "system" fn native_back(_: JNIEnv, _: JClass) {
-    push(ViewEvent::Back);
+    ffi::callback("native_back", (), || {
+        push(ViewEvent::Back);
+    })
 }
 
 extern "system" fn native_lifecycle(_: JNIEnv, _: JClass, phase: jint) {
-    push(ViewEvent::Lifecycle { active: phase == 0 });
+    ffi::callback("native_lifecycle", (), || {
+        push(ViewEvent::Lifecycle { active: phase == 0 });
+    })
 }
 
 extern "system" fn native_appearance(_: JNIEnv, _: JClass, dark: jboolean) {
-    *DARK.lock().unwrap() = dark != 0;
-    push(ViewEvent::Appearance { dark: dark != 0 });
+    ffi::callback("native_appearance", (), || {
+        *lock(&DARK) = dark != 0;
+        push(ViewEvent::Appearance { dark: dark != 0 });
+    })
 }
 
 extern "system" fn native_long_press(_: JNIEnv, _: JClass, x: jfloat, y: jfloat) {
-    push(ViewEvent::LongPress { x, y });
+    ffi::callback("native_long_press", (), || {
+        push(ViewEvent::LongPress { x, y });
+    })
 }
 
 extern "system" fn native_edit_action(_: JNIEnv, _: JClass, action: jint) {
-    if let Some(action) = keys::EditAction::from_code(action) {
-        push(ViewEvent::EditAction(action));
-    }
+    ffi::callback("native_edit_action", (), || {
+        if let Some(action) = keys::EditAction::from_code(action) {
+            push(ViewEvent::EditAction(action));
+        }
+    })
 }
 
 extern "system" fn native_autofill(mut env: JNIEnv, _: JClass, text: JString) {
-    if let Some(text) = string(&mut env, &text) {
-        push(ViewEvent::Autofill(text));
-    }
+    ffi::callback("native_autofill", (), || {
+        if let Some(text) = string(&mut env, &text) {
+            push(ViewEvent::Autofill(text));
+        }
+    })
 }
 
 extern "system" fn native_handle_drag(
@@ -568,16 +601,18 @@ extern "system" fn native_handle_drag(
     x: jfloat,
     y: jfloat,
 ) {
-    let (Some(handle), Some(phase)) = (
-        selection::Handle::from_code(handle),
-        selection::DragPhase::from_code(phase),
-    ) else {
-        return;
-    };
-    let scale = density().max(0.1);
-    push(ViewEvent::HandleDrag {
-        handle,
-        phase,
-        position: point(px(x / scale), px(y / scale)),
-    });
+    ffi::callback("native_handle_drag", (), || {
+        let (Some(handle), Some(phase)) = (
+            selection::Handle::from_code(handle),
+            selection::DragPhase::from_code(phase),
+        ) else {
+            return;
+        };
+        let scale = density().max(0.1);
+        push(ViewEvent::HandleDrag {
+            handle,
+            phase,
+            position: point(px(x / scale), px(y / scale)),
+        });
+    })
 }

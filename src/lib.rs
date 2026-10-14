@@ -33,6 +33,7 @@
 #![allow(clippy::type_complexity)]
 
 mod error;
+mod ffi;
 
 #[cfg(gpui_backend)]
 mod events;

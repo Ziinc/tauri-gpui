@@ -35,6 +35,7 @@ use tauri_runtime_wry::{
 
 use crate::{
     GpuiConfig, GpuiError, GpuiOptions, events,
+    ffi::lock,
     platform::{
         PENDING_SURFACE, TauriPlatform,
         dispatcher::{LoopWaker, TauriDispatcher},
@@ -100,7 +101,7 @@ pub(crate) fn with<R>(
     let runtime = RUNTIME.try_with(Cell::get).ok().flatten();
     match runtime {
         Some(runtime) => f(runtime),
-        None if INITIALIZED.lock().unwrap().is_some() => Err(GpuiError::NotMainThread),
+        None if lock(&INITIALIZED).is_some() => Err(GpuiError::NotMainThread),
         None => Err(GpuiError::NotInitialized),
     }
 }
@@ -118,7 +119,7 @@ impl Drop for DepthGuard<'_> {
 
 pub(crate) fn initialize(app: AppHandle<Wry>, config: GpuiConfig) -> Result<(), GpuiError> {
     {
-        let mut initialized = INITIALIZED.lock().unwrap();
+        let mut initialized = lock(&INITIALIZED);
         if initialized.is_some() {
             return Err(GpuiError::AlreadyInitialized);
         }
@@ -468,10 +469,7 @@ impl Runtime {
         if !self.proxy_installed.replace(true) {
             let proxy = Mutex::new(proxy.clone());
             self.waker.set(Box::new(move || {
-                let _ = proxy
-                    .lock()
-                    .unwrap()
-                    .send_event(Message::Task(Box::new(|| {})));
+                let _ = lock(&proxy).send_event(Message::Task(Box::new(|| {})));
             }));
         }
         if self.depth.get() > 0 {
