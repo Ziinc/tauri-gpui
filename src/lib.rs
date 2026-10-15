@@ -124,11 +124,17 @@ impl GpuiConfig {
 pub struct GpuiOptions {
     /// Focus the window once GPUI is attached.
     pub focus: bool,
+    /// Render with an alpha channel, so pixels GPUI leaves unpainted show
+    /// what is behind the window.
+    pub transparent: bool,
 }
 
 impl Default for GpuiOptions {
     fn default() -> Self {
-        Self { focus: true }
+        Self {
+            focus: true,
+            transparent: false,
+        }
     }
 }
 
@@ -136,6 +142,14 @@ impl GpuiOptions {
     /// Sets whether the window takes focus once GPUI is attached (default `true`).
     pub fn focus(mut self, focus: bool) -> Self {
         self.focus = focus;
+        self
+    }
+
+    /// Sets whether GPUI renders with an alpha channel (default `false`).
+    /// The Tauri window must also be built with `transparent(true)`, and
+    /// the desktop must composite windows for it to show through.
+    pub fn transparent(mut self, transparent: bool) -> Self {
+        self.transparent = transparent;
         self
     }
 }
