@@ -340,13 +340,33 @@ impl Runtime {
             appearance,
         } = params;
         let label = window.label().to_string();
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        let wayland = crate::platform::wayland::Content::new(raw.window, raw.display);
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        let raw = match &wayland {
+            Some(content) => RawWindow {
+                window: content.window_handle(),
+                ..raw
+            },
+            None => raw,
+        };
+        // FIFO blocks the main thread on frame callbacks, which compositors
+        // hold back from surfaces not yet mapped, hidden or minimized (and
+        // GTK, which maps the window, runs on that thread). GPUI's own
+        // Wayland platform presents in mailbox mode for the same reason.
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        let present_mode = wayland
+            .is_some()
+            .then_some(gpui_wgpu::wgpu::PresentMode::Mailbox);
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+        let present_mode = None;
         let renderer = WgpuRenderer::new(
             self.platform.gpu_context.clone(),
             &raw,
             WgpuSurfaceConfig {
                 size: physical_size,
                 transparent: false,
-                preferred_present_mode: None,
+                preferred_present_mode: present_mode,
             },
             None,
         )
@@ -395,9 +415,15 @@ impl Runtime {
             a11y: RefCell::default(),
             #[cfg(not(gpui_mobile))]
             a11y_bounds_dirty: Cell::new(true),
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            wayland,
         });
         #[cfg(all(not(gpui_mobile), any(target_os = "linux", target_os = "freebsd")))]
         crate::platform::file_drop::gtk::install(window, Rc::downgrade(&inner));
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if inner.wayland.is_some() {
+            crate::platform::wayland::install(window, Rc::downgrade(&inner));
+        }
         // The window may have been built maximized, fullscreen or minimized.
         inner.sync_window_mode();
         inner.reported_visible.set(inner.state.borrow().visible);
@@ -687,6 +713,10 @@ impl Runtime {
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                 if let Some(ime) = &surface.ime {
                     ime.flush(surface);
+                }
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                if let Some(content) = &surface.wayland {
+                    content.flush();
                 }
                 surface.flush_ime_commit();
                 surface.refresh_window_mode();
