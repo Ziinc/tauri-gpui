@@ -103,6 +103,11 @@ impl PlatformDisplay for TauriDisplay {
     fn bounds(&self) -> Bounds<Pixels> {
         self.bounds
     }
+
+    // Tauri's `Monitor` does not expose the refresh rate.
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 struct UsKeyboardLayout;
@@ -424,6 +429,10 @@ impl Platform for TauriPlatform {
     fn on_system_sleep(&self, _callback: Box<dyn FnMut()>) {}
 
     fn on_system_wake(&self, _callback: Box<dyn FnMut()>) {}
+
+    // TAO reports no monitor hot-plug event, so this never fires; GPUI
+    // still re-reads `displays()` whenever it asks for them.
+    fn on_displays_changed(&self, _callback: Box<dyn FnMut()>) {}
 
     fn set_menus(&self, _menus: Vec<Menu>, _keymap: &Keymap) {
         log_unsupported("set_menus (use Tauri's menu API)");
