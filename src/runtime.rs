@@ -381,7 +381,11 @@ impl Runtime {
         )
         .map_err(|e| GpuiError::RendererInitialization(format!("{e:#}")))?;
 
-        let sprite_atlas = renderer.sprite_atlas().clone();
+        let sprite_atlas: Arc<dyn gpui::PlatformAtlas> = renderer.sprite_atlas().clone();
+        #[cfg(all(feature = "test-support", not(gpui_mobile)))]
+        let capture = crate::platform::capture::Capture::new(sprite_atlas.clone());
+        #[cfg(all(feature = "test-support", not(gpui_mobile)))]
+        let sprite_atlas = capture.as_ref().map_or(sprite_atlas, |c| c.atlas());
         let defer: Rc<dyn Fn(Box<dyn FnOnce()>)> = Rc::new({
             let deferred = self.deferred.clone();
             let waker = self.waker.clone();
@@ -410,6 +414,8 @@ impl Runtime {
             reported_visible: Cell::new(true),
             transparent: Cell::new(options.transparent),
             sprite_atlas,
+            #[cfg(all(feature = "test-support", not(gpui_mobile)))]
+            capture,
             closed: Cell::new(false),
             gpui_handle: Cell::new(None),
             display: RefCell::default(),
