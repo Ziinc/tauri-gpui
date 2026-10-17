@@ -187,6 +187,7 @@ impl WindowInner {
     /// `content_origin`. For coordinates GTK reports or expects relative to
     /// the toplevel window (input method, file drops); TAO's pointer events
     /// are already rewritten to the content area.
+    #[cfg(not(gpui_mobile))]
     pub fn toplevel_content_origin(&self) -> Point<Pixels> {
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         if let Some(x11) = &self.x11 {
