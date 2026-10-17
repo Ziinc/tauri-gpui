@@ -60,6 +60,7 @@ pub(crate) struct Callbacks {
     pub hover_status_change: Option<Box<dyn FnMut(bool)>>,
     pub resize: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
     pub moved: Option<Box<dyn FnMut()>>,
+    pub display_changed: Option<Box<dyn FnMut()>>,
     pub should_close: Option<Box<dyn FnMut() -> bool>>,
     pub close: Option<Box<dyn FnOnce()>>,
     pub hit_test_window_control: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
@@ -504,6 +505,7 @@ impl WindowInner {
         if display_id(self) != old_display {
             // GPUI re-reads the window's display on bounds changes.
             self.call_unit(|c| &mut c.moved);
+            self.call_unit(|c| &mut c.display_changed);
         }
         #[cfg(not(gpui_mobile))]
         self.sync_a11y_bounds();
@@ -867,6 +869,10 @@ impl PlatformWindow for TauriGpuiWindow {
 
     fn on_moved(&self, callback: Box<dyn FnMut()>) {
         self.inner.callbacks.borrow_mut().moved = Some(callback);
+    }
+
+    fn on_display_changed(&self, callback: Box<dyn FnMut()>) {
+        self.inner.callbacks.borrow_mut().display_changed = Some(callback);
     }
 
     fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>) {
