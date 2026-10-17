@@ -281,6 +281,15 @@ impl Runtime {
 
     #[cfg(not(gpui_android))]
     fn desktop_surface(window: &tauri::Window<Wry>) -> Result<SurfaceParams, GpuiError> {
+        // A window built hidden has no X11 window until GTK realizes it, so
+        // realize it here to attach GPUI before it is first shown.
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Ok(gtk_window) = window.gtk_window() {
+            use gtk::prelude::WidgetExt;
+            if !gtk_window.is_realized() {
+                gtk_window.realize();
+            }
+        }
         let scale_factor = window.scale_factor()? as f32;
         // On iOS the view fills the whole window, while `inner_size` is only
         // its safe area; the safe area is reported as insets instead.
@@ -365,7 +374,7 @@ impl Runtime {
             &raw,
             WgpuSurfaceConfig {
                 size: physical_size,
-                transparent: false,
+                transparent: options.transparent,
                 preferred_present_mode: present_mode,
             },
             None,
@@ -399,6 +408,7 @@ impl Runtime {
             mode_dirty: Cell::new(true),
             display_dirty: Cell::new(true),
             reported_visible: Cell::new(true),
+            transparent: Cell::new(options.transparent),
             sprite_atlas,
             closed: Cell::new(false),
             gpui_handle: Cell::new(None),

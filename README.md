@@ -117,7 +117,7 @@ Everything else does one of three things:
 - **System clipboard:** text and images via `arboard`, including the Linux primary selection. Images are converted to and from RGBA (pasted images arrive as PNG, encoded for speed since it runs during the paste; SVG cannot be copied). GPUI string metadata is kept in-process and reattached while the clipboard still holds the same text.
 - **Delegated to Tauri:** `quit`, `restart`, and the window title, focus, minimize, maximize, fullscreen and resize operations.
 - **Explicitly unsupported:** these return `GpuiError::UnsupportedOperation` through `anyhow`, or are logged at debug level when the GPUI signature has no error channel.
-  - Windows: `open_window` outside `attach_gpui`, non-normal window kinds, background appearance (blur/transparency).
+  - Windows: `open_window` outside `attach_gpui`, non-normal window kinds, blurred backgrounds (they render as transparent). For a transparent window, build the Tauri window with `transparent(true)` and attach with `GpuiOptions::default().transparent(true)`; pixels GPUI leaves unpainted then show through where the desktop composites windows.
   - System integration: credentials, menus and dock menus, path prompts (use `tauri-plugin-dialog`), `open_url` (use `tauri-plugin-opener`), URL schemes, `reveal_path`/`open_with_system`, app hide/unhide, idle-sleep prevention.
   - Input: IME candidate positioning on macOS.
 - **Handled by GPUI's built-in fallback:** prompts (`PlatformWindow::prompt` returns `None`).

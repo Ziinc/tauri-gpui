@@ -132,6 +132,8 @@ pub(crate) struct WindowInner {
     pub display_dirty: Cell<bool>,
     /// Visibility as last reported to GPUI.
     pub reported_visible: Cell<bool>,
+    /// The surface renders with an alpha channel.
+    pub transparent: Cell<bool>,
     /// Kept outside the renderer so GPUI can still ask for it after the
     /// renderer is torn down.
     pub sprite_atlas: Arc<dyn PlatformAtlas>,
@@ -770,7 +772,11 @@ impl PlatformWindow for TauriGpuiWindow {
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {
-        WindowBackgroundAppearance::Opaque
+        if self.inner.transparent.get() {
+            WindowBackgroundAppearance::Transparent
+        } else {
+            WindowBackgroundAppearance::Opaque
+        }
     }
 
     fn set_title(&mut self, title: &str) {
@@ -781,8 +787,13 @@ impl PlatformWindow for TauriGpuiWindow {
         }));
     }
 
-    fn set_background_appearance(&self, _background_appearance: WindowBackgroundAppearance) {
-        super::log_unsupported("set_background_appearance");
+    fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
+        // Blurred backgrounds need platform APIs; they render as transparent.
+        let transparent = background_appearance != WindowBackgroundAppearance::Opaque;
+        self.inner.transparent.set(transparent);
+        if let Some(renderer) = self.inner.state.borrow_mut().renderer.as_mut() {
+            renderer.update_transparency(transparent);
+        }
     }
 
     fn minimize(&self) {
