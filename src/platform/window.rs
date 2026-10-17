@@ -182,6 +182,19 @@ impl WindowInner {
         Point::default()
     }
 
+    /// Where GPUI's content starts in the toplevel GTK window's own
+    /// coordinates: below the menu bar on X11 (see `platform::x11`), else
+    /// `content_origin`. For coordinates GTK reports or expects relative to
+    /// the toplevel window (input method, file drops); TAO's pointer events
+    /// are already rewritten to the content area.
+    pub fn toplevel_content_origin(&self) -> Point<Pixels> {
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Some(x11) = &self.x11 {
+            return gpui::point(gpui::px(0.), gpui::px(x11.chrome_height()));
+        }
+        self.content_origin()
+    }
+
     pub fn logical_size(&self) -> Size<Pixels> {
         let state = self.state.borrow();
         logical(state.physical_size, state.scale_factor)
@@ -447,10 +460,13 @@ impl WindowInner {
                 y1: position.y as f64 + size.height as f64,
             }
         };
-        adapter.set_bounds(
-            rect(outer_position, outer_size),
-            rect(inner_position, inner_size),
+        // GPUI's content sits below a menu bar (on X11), so its own origin
+        // is that far down the client area.
+        let mut inner = rect(inner_position, inner_size);
+        inner.y0 += f64::from(
+            f32::from(self.toplevel_content_origin().y) * self.state.borrow().scale_factor,
         );
+        adapter.set_bounds(rect(outer_position, outer_size), inner);
     }
 
     /// Tells the accessibility adapter whether the window has focus.
@@ -963,7 +979,7 @@ impl PlatformWindow for TauriGpuiWindow {
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         if let Some(ime) = &self.inner.ime {
             ime.set_cursor(Bounds::new(
-                bounds.origin + self.inner.content_origin(),
+                bounds.origin + self.inner.toplevel_content_origin(),
                 bounds.size,
             ));
         }
