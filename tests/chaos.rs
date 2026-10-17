@@ -1939,11 +1939,11 @@ fn capture(h: &mut Harness) {
     let (size, inked) = match &shot {
         Ok((width, height, pixels)) => {
             let rows = (24. * scale) as usize;
-            let background = &pixels[..4];
+            let pixels = pixels.as_chunks::<4>().0;
             let inked = pixels
-                .chunks_exact(4)
+                .iter()
                 .take(*width as usize * rows)
-                .filter(|p| p != &background)
+                .filter(|p| *p != &pixels[0])
                 .count();
             ((*width, *height), inked)
         }
