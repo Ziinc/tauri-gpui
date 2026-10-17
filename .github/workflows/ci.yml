@@ -28,6 +28,7 @@ jobs:
             python3-gi gir1.2-gtk-3.0 at-spi2-core gir1.2-atspi-2.0 weston
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features test-support -- -D warnings
       - run: cargo test --workspace
       # The demo (and gpui-kit) is a separate workspace.
       - run: cargo fmt --manifest-path examples/gpui-demo/Cargo.toml --check

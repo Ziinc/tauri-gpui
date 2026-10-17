@@ -291,6 +291,17 @@ With `GPUI_DEMO_AUTOTEST=<dir>` set, the demo:
 3. captures every window with [`tauri-plugin-screenshots`](https://crates.io/crates/tauri-plugin-screenshots);
 4. writes `report.json` and exits non-zero if any check fails.
 
+### Capturing a window's frame
+
+With the `test-support` feature, GPUI's `Window::render_to_image` works in Tauri windows (desktop only). It returns the window's current frame without a screen grab, so it works with the window hidden or covered, and on Wayland. Screenshot and visual-test tools that use it, such as [gpui-visual-test](https://github.com/Ziinc/gpui-visual-test) (`capture::window_shot`) and [gpui-playwright](https://github.com/Ziinc/gpui-playwright), then work in tauri-gpui apps:
+
+```toml
+[dev-dependencies]
+tauri-plugin-gpui = { version = "0.1", features = ["test-support"] }
+```
+
+The feature opens a second, offscreen GPU device per window and stores every glyph and image in both renderers' sprite atlases. Leave it out of release builds. After the GPU device is lost, that window can't be captured.
+
 ## Chaos and integration tests
 
 [`tests/chaos.rs`](tests/chaos.rs) runs a real Tauri (Wry) event loop with `tauri-plugin-clipboard-manager` installed and hammers the plugin from a driver thread, asserting on what GPUI and Tauri observe:
@@ -301,6 +312,7 @@ With `GPUI_DEMO_AUTOTEST=<dir>` set, the demo:
 - close handling (Tauri `prevent_close`, `destroy`) and `cx.quit()` routed through Tauri's `ExitRequested`;
 - Tauri events, managed state, `on_window_event`, `async_runtime` and `run_on_main_thread` used together with GPUI; GPUI timers, background tasks and floods of 20k foreground tasks;
 - the clipboard shared with `tauri-plugin-clipboard-manager`;
+- `Window::render_to_image` (`test-support`) capturing a window's frame, glyphs included;
 - 600 cross-thread calls while windows churn, and random real X11 keyboard/mouse input via `xdotool` (typed text must arrive exactly once);
 - input-method composition through GTK's built-in input method (selected unless `GTK_IM_MODULE` is set): a Ctrl+Shift+U preedit must reach GPUI as marked text, its commit replace it, Escape cancel it, a dead key compose once, and plain keys and shortcuts still arrive as keys.
 

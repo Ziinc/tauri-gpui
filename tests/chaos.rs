@@ -112,6 +112,8 @@ impl Render for Probe {
         div()
             .id("probe")
             .size_full()
+            // Black text on white, so captures can tell glyphs were drawn.
+            .bg(gpui::white())
             .track_focus(&self.focus)
             .on_mouse_down(
                 MouseButton::Left,
@@ -1907,6 +1909,58 @@ fn displays(h: &mut Harness) {
     h.window_gone(&label);
 }
 
+/// With `test-support`, `Window::render_to_image` re-renders the frame
+/// offscreen, glyphs included.
+fn capture(h: &mut Harness) {
+    if !cfg!(feature = "test-support") {
+        h.check("capture", true, "skipped: needs --features test-support");
+        return;
+    }
+    let label = h.open_probe("capture", (300., 200.));
+    h.rendered(&label);
+    let l = label.clone();
+    let shot = h.gpui(move |cx| {
+        with_gpui_window(cx, &l, |window, _| {
+            #[cfg(feature = "test-support")]
+            let shot = window.render_to_image().map_err(|e| format!("{e:#}"));
+            #[cfg(not(feature = "test-support"))]
+            let shot: Result<(u32, u32, Vec<u8>), String> = Err(String::new());
+            #[cfg(feature = "test-support")]
+            let shot = shot.map(|image| (image.width(), image.height(), image.into_raw()));
+            (shot, window.viewport_size(), window.scale_factor())
+        })
+    });
+    let (shot, viewport, scale) = shot.expect("capture window");
+    let expected = (
+        (f32::from(viewport.width) * scale).round() as u32,
+        (f32::from(viewport.height) * scale).round() as u32,
+    );
+    // The probe's "renders: N" line is the only thing drawn, at the top.
+    let (size, inked) = match &shot {
+        Ok((width, height, pixels)) => {
+            let rows = (24. * scale) as usize;
+            let pixels = pixels.as_chunks::<4>().0;
+            let inked = pixels
+                .iter()
+                .take(*width as usize * rows)
+                .filter(|p| *p != &pixels[0])
+                .count();
+            ((*width, *height), inked)
+        }
+        Err(_) => ((0, 0), 0),
+    };
+    h.check(
+        "render_to_image captures the window's frame, glyphs included",
+        shot.is_ok() && size == expected && inked > 0,
+        format!(
+            "{:?}, size {size:?} (expected {expected:?}), {inked} inked pixels",
+            shot.as_ref().err()
+        ),
+    );
+    h.close(&label);
+    h.window_gone(&label);
+}
+
 /// Many GPUI windows at once, all torn down in a single main-thread turn.
 fn many_windows(h: &mut Harness) {
     let baseline = h.gpui_window_count();
@@ -2394,6 +2448,7 @@ fn run(app: AppHandle<Wry>, seed: u64) {
         ("hide_show", hide_show),
         ("minimize", minimize),
         ("displays", displays),
+        ("capture", capture),
         ("many_windows", many_windows),
         ("gpui_remove_window", gpui_remove_window),
         ("task_flood", task_flood),

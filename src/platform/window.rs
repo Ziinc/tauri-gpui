@@ -137,6 +137,9 @@ pub(crate) struct WindowInner {
     /// Kept outside the renderer so GPUI can still ask for it after the
     /// renderer is torn down.
     pub sprite_atlas: Arc<dyn PlatformAtlas>,
+    /// Offscreen re-rendering for `Window::render_to_image`.
+    #[cfg(all(feature = "test-support", not(gpui_mobile)))]
+    pub capture: Option<super::capture::Capture>,
     pub closed: Cell<bool>,
     pub gpui_handle: Cell<Option<AnyWindowHandle>>,
     /// The monitor the window is on; refreshed with the window mode.
@@ -915,6 +918,10 @@ impl PlatformWindow for TauriGpuiWindow {
                 "GPU device lost; recovering renderer for `{}`",
                 self.inner.label
             );
+            #[cfg(all(feature = "test-support", not(gpui_mobile)))]
+            if let Some(capture) = &self.inner.capture {
+                capture.atlas_reset();
+            }
             if let Err(error) = renderer.recover(&self.inner.raw.get()) {
                 log::error!("failed to recover GPUI renderer: {error:#}");
             }
@@ -930,6 +937,17 @@ impl PlatformWindow for TauriGpuiWindow {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.inner.sprite_atlas.clone()
+    }
+
+    #[cfg(all(feature = "test-support", not(gpui_mobile)))]
+    fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
+        use anyhow::Context as _;
+        let size = self.inner.state.borrow().physical_size;
+        self.inner
+            .capture
+            .as_ref()
+            .context("no offscreen GPU device for capturing this window")?
+            .render(scene, size)
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
