@@ -114,6 +114,20 @@ pub fn webview_frame(webview: &Webview<Wry>) -> WebviewFrame {
     }
 }
 
+/// Gives keyboard focus to `webview`, a child webview placed with
+/// [`webview_frame`], as clicking it would. Use it when a GPUI control opens
+/// something in the webview that expects typing, such as a search box.
+///
+/// Must be called on the main thread. On Linux the webview must be shown
+/// (painted in the last frame); elsewhere this is `Webview::set_focus`.
+pub fn focus_webview(webview: &Webview<Wry>) -> tauri::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    if linux::focus(webview.label()) {
+        return Ok(());
+    }
+    webview.set_focus()
+}
+
 /// The element returned by [`webview_frame`].
 pub struct WebviewFrame {
     id: ElementId,
@@ -261,12 +275,14 @@ pub(crate) fn sync(inner: &WindowInner) {
     });
     drop(webviews);
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    let x11_parent = linux::x11_parent(inner.raw.get().window);
+    let x11_parent = crate::platform::x11::xid(inner.raw.get().window);
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    let toplevel = inner.x11.as_ref().map(|x11| x11.toplevel_xid);
     (inner.defer)(Box::new(move || {
         for (webview, painted, was_shown) in changes {
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             if let Some(parent) = x11_parent {
-                linux::apply(&webview, parent, painted);
+                linux::apply(&webview, parent, toplevel, painted);
                 continue;
             }
             let result = match painted {
@@ -280,6 +296,15 @@ pub(crate) fn sync(inner: &WindowInner) {
             }
         }
     }));
+}
+
+/// Makes the next frame re-apply every webview, e.g. after GPUI's native
+/// surface changed.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub(crate) fn invalidate(inner: &WindowInner) {
+    for embedded in inner.webviews.borrow_mut().values_mut() {
+        embedded.applied = None;
+    }
 }
 
 fn rect(bounds: Bounds<Pixels>) -> Rect {

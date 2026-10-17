@@ -80,7 +80,7 @@ pub use error::GpuiError;
 pub use gpui;
 #[cfg(all(gpui_backend, not(gpui_mobile)))]
 #[cfg_attr(docsrs, doc(cfg(not(any(target_os = "android", target_os = "ios")))))]
-pub use webview::{WebviewFrame, webview_frame};
+pub use webview::{WebviewFrame, focus_webview, webview_frame};
 
 use tauri::Wry;
 

@@ -5,6 +5,8 @@
 mod android;
 #[cfg(gpui_ios)]
 mod ios;
+#[cfg(all(any(target_os = "linux", target_os = "freebsd"), not(gpui_mobile)))]
+mod x11;
 
 use std::{
     cell::{Cell, RefCell},
@@ -56,6 +58,8 @@ pub(crate) struct SurfaceParams {
     scale_factor: f32,
     origin: gpui::Point<gpui::Pixels>,
     appearance: gpui::WindowAppearance,
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    x11: Option<crate::platform::x11::X11Window>,
 }
 
 struct Mount {
@@ -274,7 +278,10 @@ impl Runtime {
         }
         #[cfg(not(gpui_mobile))]
         {
-            let params = Self::desktop_surface(window)?;
+            #[allow(unused_mut)]
+            let mut params = Self::desktop_surface(window)?;
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            self.x11_surface(window, &mut params);
             self.attach_surface(window, options, open, params)
         }
     }
@@ -330,6 +337,8 @@ impl Runtime {
             scale_factor,
             origin,
             appearance,
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            x11: None,
         })
     }
 
@@ -347,6 +356,8 @@ impl Runtime {
             scale_factor,
             origin,
             appearance,
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            x11,
         } = params;
         let label = window.label().to_string();
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -427,6 +438,8 @@ impl Runtime {
             a11y_bounds_dirty: Cell::new(true),
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             wayland,
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            x11,
         });
         #[cfg(all(not(gpui_mobile), any(target_os = "linux", target_os = "freebsd")))]
         crate::platform::file_drop::gtk::install(window, Rc::downgrade(&inner));
@@ -595,6 +608,17 @@ impl Runtime {
                 if self.ios_window_event(&inner, event) {
                     return false;
                 }
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                let rewritten;
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                let event = match self.x11_window_event(&inner, event) {
+                    x11::Rewrite::Keep => event,
+                    x11::Rewrite::Drop => return false,
+                    x11::Rewrite::Replace(event) => {
+                        rewritten = event;
+                        &rewritten
+                    }
+                };
                 self.track_window_state(&inner, event);
                 let destroyed = {
                     let _guard = self.enter();
@@ -730,6 +754,8 @@ impl Runtime {
                 }
                 surface.flush_ime_commit();
                 surface.refresh_window_mode();
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                self.sync_x11(surface);
                 // GPUI is told hidden windows get no frames; keep the request
                 // pending until the window is visible again.
                 if frames_allowed && surface.reported_visible.get() && surface.frame_pending.take()
