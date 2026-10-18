@@ -17,7 +17,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DISPLAY_NUM="${DISPLAY_NUM:-98}"
 
-cargo build --manifest-path "$ROOT/Cargo.toml" --test chaos
+cargo build --manifest-path "$ROOT/Cargo.toml" --features test-support --test chaos
 
 if [[ "${1:-}" == "--wayland" ]]; then
   # A fresh compositor each run: one that saw a client fail can stop
@@ -51,4 +51,4 @@ export RUST_LOG="${RUST_LOG:-warn}"
 # run without one: the lookup then fails immediately and TAO falls back to GTK.
 export DBUS_SESSION_BUS_ADDRESS=disabled:
 # The suite's own watchdog (CHAOS_TIMEOUT_SECS, default 600) fires first.
-timeout $(( ${CHAOS_TIMEOUT_SECS:-600} + 60 )) cargo test --manifest-path "$ROOT/Cargo.toml" --test chaos
+timeout $(( ${CHAOS_TIMEOUT_SECS:-600} + 60 )) cargo test --manifest-path "$ROOT/Cargo.toml" --features test-support --test chaos

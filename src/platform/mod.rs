@@ -6,6 +6,8 @@
 
 #[cfg(not(gpui_mobile))]
 pub(crate) mod a11y;
+#[cfg(all(feature = "test-support", not(gpui_mobile)))]
+pub(crate) mod capture;
 #[cfg(not(gpui_mobile))]
 pub(crate) mod clipboard;
 #[cfg(gpui_mobile)]
