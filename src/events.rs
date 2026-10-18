@@ -94,10 +94,12 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
             inner.call_bool(|c| &mut c.hover_status_change, false);
         }
         WindowEvent::CursorMoved { position, .. } => {
+            let toplevel = toplevel_pointer_position(inner);
             let (position, pressed_button, modifiers) = {
                 let mut state = inner.state.borrow_mut();
-                state.mouse_position =
-                    logical_position(*position, state.scale_factor) - inner.content_origin();
+                state.mouse_position = toplevel
+                    .unwrap_or_else(|| logical_position(*position, state.scale_factor))
+                    - inner.content_origin();
                 (state.mouse_position, state.pressed_button, state.modifiers)
             };
             inner.handle_input(PlatformInput::MouseMove(MouseMoveEvent {
@@ -234,6 +236,28 @@ pub(crate) fn appearance(theme: Theme) -> WindowAppearance {
         Theme::Dark => WindowAppearance::Dark,
         _ => WindowAppearance::Light,
     }
+}
+
+/// Where the pointer is in this window, asked of GDK.
+///
+/// TAO reports the pointer relative to whichever X11 window GDK last saw it
+/// in. An embedded webview is its own X11 child window (see
+/// `webview/linux.rs`), so motion that crosses one, or arrives just after
+/// it is hidden, comes in the webview's coordinates: a GPUI drag jumps, and
+/// a click where a hidden webview was lands on GPUI elements to its left.
+/// GDK's answer is relative to the toplevel, like TAO's for GPUI's own area.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn toplevel_pointer_position(inner: &WindowInner) -> Option<gpui::Point<gpui::Pixels>> {
+    use gtk::prelude::*;
+    let window = inner.tauri_window.gtk_window().ok()?.window()?;
+    let pointer = window.display().default_seat()?.pointer()?;
+    let (_, x, y, _) = window.device_position_double(&pointer);
+    Some(point(px(x as f32), px(y as f32)))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+fn toplevel_pointer_position(_inner: &WindowInner) -> Option<gpui::Point<gpui::Pixels>> {
+    None
 }
 
 fn logical_position(position: PhysicalPosition<f64>, scale: f32) -> gpui::Point<gpui::Pixels> {
