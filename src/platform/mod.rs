@@ -17,6 +17,8 @@ pub(crate) mod dispatcher;
 #[cfg(not(gpui_mobile))]
 pub(crate) mod file_drop;
 pub(crate) mod ime;
+#[cfg(target_os = "macos")]
+pub(crate) mod metal_layer;
 mod queue;
 pub(crate) mod typed_text;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
