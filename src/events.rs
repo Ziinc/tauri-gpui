@@ -133,6 +133,8 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
                     if button == MouseButton::Left && !handled {
                         inner.window_control_pressed(click_count);
                     }
+                    #[cfg(gpui_mobile)]
+                    let _ = handled;
                 }
                 ElementState::Released => {
                     let click_count = {
@@ -150,6 +152,8 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
                     if button == MouseButton::Left && !handled {
                         inner.window_control_released();
                     }
+                    #[cfg(gpui_mobile)]
+                    let _ = handled;
                 }
                 _ => {}
             }

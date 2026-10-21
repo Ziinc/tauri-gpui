@@ -133,6 +133,7 @@ pub(crate) struct WindowInner {
     /// Visibility as last reported to GPUI.
     pub reported_visible: Cell<bool>,
     /// A press in a drag area moves the window once the pointer moves.
+    #[cfg(not(gpui_mobile))]
     pub move_pending: Cell<bool>,
     /// The surface renders with an alpha channel.
     pub transparent: Cell<bool>,
