@@ -427,6 +427,7 @@ impl Runtime {
             mode_dirty: Cell::new(true),
             display_dirty: Cell::new(true),
             reported_visible: Cell::new(true),
+            move_pending: Cell::new(false),
             transparent: Cell::new(options.transparent),
             sprite_atlas,
             #[cfg(all(feature = "test-support", not(gpui_mobile)))]

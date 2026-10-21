@@ -132,6 +132,8 @@ pub(crate) struct WindowInner {
     pub display_dirty: Cell<bool>,
     /// Visibility as last reported to GPUI.
     pub reported_visible: Cell<bool>,
+    /// A press in a drag area moves the window once the pointer moves.
+    pub move_pending: Cell<bool>,
     /// The surface renders with an alpha channel.
     pub transparent: Cell<bool>,
     /// Kept outside the renderer so GPUI can still ask for it after the
@@ -419,6 +421,126 @@ impl WindowInner {
         click.count
     }
 
+    /// The window-control area (`window_control_area`) GPUI last hit-tested
+    /// under the pointer.
+    #[cfg(not(gpui_mobile))]
+    pub fn hit_test_window_control(&self) -> Option<WindowControlArea> {
+        let mut callback = self.callbacks.borrow_mut().hit_test_window_control.take()?;
+        let area = callback();
+        restore(
+            &mut self.callbacks.borrow_mut().hit_test_window_control,
+            callback,
+        );
+        area
+    }
+
+    /// Acts on a left press GPUI left alone in a window-control area, as a
+    /// native title bar does: a drag area moves the window, or performs the
+    /// title-bar double-click action on a second click.
+    #[cfg(not(gpui_mobile))]
+    pub fn window_control_pressed(&self, click_count: usize) {
+        if self.hit_test_window_control() != Some(WindowControlArea::Drag) {
+            return;
+        }
+        if click_count == 2 {
+            self.titlebar_double_click(true, true);
+        } else if click_count == 1 {
+            // macOS needs the mouse-down to drag with, and keeps delivering
+            // clicks during the drag. X11 window managers grab the pointer
+            // for a move, which would swallow a double-click's second press,
+            // so elsewhere the move waits for the pointer to move, as GTK's
+            // and Windows' title bars do.
+            if cfg!(target_os = "macos") {
+                self.start_window_move();
+            } else {
+                self.move_pending.set(true);
+            }
+        }
+    }
+
+    /// Starts the move a drag-area press left pending (see
+    /// `window_control_pressed`) once the pointer moves with the button held.
+    #[cfg(not(gpui_mobile))]
+    pub fn pointer_moved(&self, pressed_button: Option<MouseButton>) {
+        if self.move_pending.get() && pressed_button == Some(MouseButton::Left) {
+            self.move_pending.set(false);
+            self.start_window_move();
+        }
+    }
+
+    /// Acts on a left release GPUI left alone over a close, maximize or
+    /// minimize area.
+    #[cfg(not(gpui_mobile))]
+    pub fn window_control_released(&self) {
+        self.move_pending.set(false);
+        match self.hit_test_window_control() {
+            Some(WindowControlArea::Close) => {
+                let window = self.tauri_window.clone();
+                (self.defer)(Box::new(move || {
+                    let _ = window.close();
+                }));
+            }
+            Some(WindowControlArea::Max) => self.zoom(),
+            Some(WindowControlArea::Min) => self.minimize(),
+            Some(WindowControlArea::Drag) | None => {}
+        }
+    }
+
+    /// Moves the window with the pointer until the button is released.
+    #[cfg(not(gpui_mobile))]
+    fn start_window_move(&self) {
+        let window = self.tauri_window.clone();
+        (self.defer)(Box::new(move || {
+            if let Err(error) = window.start_dragging() {
+                log::warn!("failed to start moving the window: {error}");
+            }
+        }));
+    }
+
+    /// What double-clicking a title bar does: on macOS the user's choice in
+    /// Desktop & Dock settings, elsewhere maximize.
+    #[cfg(not(gpui_mobile))]
+    fn titlebar_double_click(&self, is_resizable: bool, is_minimizable: bool) {
+        #[cfg(target_os = "macos")]
+        let action = titlebar_double_click_action();
+        #[cfg(not(target_os = "macos"))]
+        let action: Option<String> = None;
+        match action.as_deref() {
+            Some("None") => {}
+            Some("Minimize") => {
+                if is_minimizable {
+                    self.minimize();
+                }
+            }
+            _ => {
+                if is_resizable {
+                    self.zoom();
+                }
+            }
+        }
+    }
+
+    #[cfg(not(gpui_mobile))]
+    fn minimize(&self) {
+        let window = self.tauri_window.clone();
+        (self.defer)(Box::new(move || {
+            let _ = window.minimize();
+        }));
+    }
+
+    /// Toggles maximize.
+    #[cfg(not(gpui_mobile))]
+    fn zoom(&self) {
+        let window = self.tauri_window.clone();
+        (self.defer)(Box::new(move || {
+            let _ = if window.is_maximized().unwrap_or(false) {
+                window.unmaximize()
+            } else {
+                window.maximize()
+            };
+        }));
+    }
+
     /// Marks maximized/fullscreen/visibility and the monitor for a re-read.
     pub fn window_mode_changed(&self) {
         self.mode_dirty.set(true);
@@ -643,6 +765,41 @@ fn restore<T>(slot: &mut Option<T>, value: T) {
     }
 }
 
+/// macOS's `AppleActionOnDoubleClick` default: `Maximize` (the default when
+/// unset), `Minimize` or `None`.
+#[cfg(target_os = "macos")]
+fn titlebar_double_click_action() -> Option<String> {
+    use objc2::{
+        msg_send,
+        runtime::{AnyClass, AnyObject},
+    };
+    let defaults_class = AnyClass::get(c"NSUserDefaults")?;
+    let string_class = AnyClass::get(c"NSString")?;
+    // SAFETY: Foundation's documented class methods and getters, called with
+    // valid arguments; the returned objects are autoreleased and only read
+    // before this returns.
+    unsafe {
+        let defaults: *mut AnyObject = msg_send![defaults_class, standardUserDefaults];
+        let key: *mut AnyObject = msg_send![
+            string_class,
+            stringWithUTF8String: c"AppleActionOnDoubleClick".as_ptr()
+        ];
+        if defaults.is_null() || key.is_null() {
+            return None;
+        }
+        let value: *mut AnyObject = msg_send![defaults, stringForKey: key];
+        if value.is_null() {
+            return None;
+        }
+        let utf8: *const std::ffi::c_char = msg_send![value, UTF8String];
+        (!utf8.is_null()).then(|| {
+            std::ffi::CStr::from_ptr(utf8)
+                .to_string_lossy()
+                .into_owned()
+        })
+    }
+}
+
 pub(crate) fn logical(physical: Size<DevicePixels>, scale_factor: f32) -> Size<Pixels> {
     size(
         px(physical.width.0 as f32 / scale_factor),
@@ -828,27 +985,24 @@ impl PlatformWindow for TauriGpuiWindow {
     fn minimize(&self) {
         // Mobile windows have no such states.
         #[cfg(not(gpui_mobile))]
-        {
-            let window = self.inner.tauri_window.clone();
-            (self.inner.defer)(Box::new(move || {
-                let _ = window.minimize();
-            }));
-        }
+        self.inner.minimize();
     }
 
     fn zoom(&self) {
         // Mobile windows have no such states.
         #[cfg(not(gpui_mobile))]
-        {
-            let window = self.inner.tauri_window.clone();
-            (self.inner.defer)(Box::new(move || {
-                let _ = if window.is_maximized().unwrap_or(false) {
-                    window.unmaximize()
-                } else {
-                    window.maximize()
-                };
-            }));
-        }
+        self.inner.zoom();
+    }
+
+    fn start_window_move(&self) {
+        #[cfg(not(gpui_mobile))]
+        self.inner.start_window_move();
+    }
+
+    fn titlebar_double_click(&self, _is_resizable: bool, _is_minimizable: bool) {
+        #[cfg(not(gpui_mobile))]
+        self.inner
+            .titlebar_double_click(_is_resizable, _is_minimizable);
     }
 
     fn toggle_fullscreen(&self) {
