@@ -5,6 +5,8 @@
 mod android;
 #[cfg(gpui_ios)]
 mod ios;
+#[cfg(any(gpui_ios, target_os = "macos"))]
+mod metal;
 #[cfg(all(any(target_os = "linux", target_os = "freebsd"), not(gpui_mobile)))]
 mod x11;
 
@@ -282,6 +284,8 @@ impl Runtime {
             let mut params = Self::desktop_surface(window)?;
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             self.x11_surface(window, &mut params);
+            #[cfg(target_os = "macos")]
+            self.seed_metal_context(params.raw)?;
             self.attach_surface(window, options, open, params)
         }
     }

@@ -96,6 +96,9 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.9" }
 [target.'cfg(target_os = "macos")'.dependencies]
 # VoiceOver (`src/platform/a11y.rs`); the version GPUI's macOS platform uses.
 accesskit_macos = "0.26"
+# Creating the detached `CAMetalLayer` that probes the Metal adapter
+# (`src/runtime/metal.rs`). The objc2 generation TAO uses.
+objc2 = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # `Win32_UI_Input_Ime`: placing the IME windows at GPUI's caret.
