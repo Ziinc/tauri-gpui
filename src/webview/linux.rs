@@ -14,19 +14,12 @@ use std::{
 
 use gdkx11::{X11Display, ffi::gdk_x11_window_foreign_new_for_display};
 use gpui::{Bounds, Pixels};
-use gtk::{glib::translate::FromGlibPtrFull as _, prelude::*};
-use raw_window_handle::RawWindowHandle;
+use gtk::{
+    glib::translate::{FromGlibPtrFull as _, ToGlibPtr as _, from_glib_none},
+    prelude::*,
+};
 use tauri::{Webview, Wry};
 use x11_dl::xlib::{CurrentTime, Display, RevertToParent, Xlib};
-
-/// The X11 window GPUI renders into, when the window runs on X11.
-pub(super) fn x11_parent(window: RawWindowHandle) -> Option<c_ulong> {
-    match window {
-        RawWindowHandle::Xlib(handle) => Some(handle.window),
-        RawWindowHandle::Xcb(handle) => Some(handle.window.get().into()),
-        _ => None,
-    }
-}
 
 /// An X11 child window holding one webview.
 struct Host {
@@ -34,8 +27,11 @@ struct Host {
     gdk_display: X11Display,
     display: *mut Display,
     window: c_ulong,
-    /// The GPUI window's X11 window, which gets keyboard focus back.
+    /// GPUI's X11 window, which this one is a child of.
     parent: c_ulong,
+    /// The window that gets keyboard focus back: the toplevel, which is
+    /// `parent` unless GPUI renders below a menu bar.
+    focus: c_ulong,
     /// Keeps the GTK side of the foreign window, and the webview, alive.
     gtk_window: gtk::Window,
     /// The webview widget this host holds; a webview recreated under the
@@ -59,6 +55,7 @@ impl Drop for Host {
         // The X server destroys child windows with their parent, so the
         // window may already be gone: ignore the resulting BadWindow.
         self.gdk_display.error_trap_push();
+        self.release_focus();
         // SAFETY: the host owns this GTK toplevel; nothing else refers to it.
         unsafe { self.gtk_window.destroy() };
         // SAFETY: the window was created by `Host::new` on this display.
@@ -75,16 +72,24 @@ thread_local! {
 /// Returns keyboard focus to GPUI after a click outside the webview.
 pub(super) fn focus_parent(label: &str) {
     HOSTS.with(|hosts| {
-        if let Some(host) = hosts.borrow().get(label)
-            && host.focused.replace(false)
-        {
-            // SAFETY: both windows are alive while the host is.
-            unsafe {
-                (host.xlib.XSetInputFocus)(host.display, host.parent, RevertToParent, CurrentTime)
-            };
+        if let Some(host) = hosts.borrow().get(label) {
+            host.return_focus();
             host.flush();
         }
     });
+}
+
+/// Gives keyboard focus to a shown webview, as a click on it would.
+/// Returns `false` when the webview has no shown host.
+pub(super) fn focus(label: &str) -> bool {
+    HOSTS.with(|hosts| {
+        let hosts = hosts.borrow();
+        let Some(host) = hosts.get(label).filter(|host| host.shown.get().is_some()) else {
+            return false;
+        };
+        host.take_focus();
+        true
+    })
 }
 
 /// Destroys the host of a webview whose GPUI window is gone.
@@ -95,7 +100,12 @@ pub(super) fn forget(label: &str) {
 }
 
 /// Moves `webview` to `painted` (logical, window-relative) or hides it.
-pub(super) fn apply(webview: &Webview<Wry>, parent: c_ulong, painted: Option<Bounds<Pixels>>) {
+pub(super) fn apply(
+    webview: &Webview<Wry>,
+    parent: c_ulong,
+    toplevel: Option<c_ulong>,
+    painted: Option<Bounds<Pixels>>,
+) {
     let label = webview.label().to_string();
     let result = webview.with_webview(move |platform| {
         let widget = platform.inner().upcast::<gtk::Widget>();
@@ -108,7 +118,7 @@ pub(super) fn apply(webview: &Webview<Wry>, parent: c_ulong, painted: Option<Bou
                 hosts.remove(&label);
             }
             if !hosts.contains_key(&label) {
-                match Host::new(parent, &widget) {
+                match Host::new(parent, toplevel.unwrap_or(parent), &widget) {
                     Some(host) => {
                         hosts.insert(label.clone(), host);
                     }
@@ -128,7 +138,7 @@ pub(super) fn apply(webview: &Webview<Wry>, parent: c_ulong, painted: Option<Bou
 }
 
 impl Host {
-    fn new(parent: c_ulong, widget: &gtk::Widget) -> Option<Self> {
+    fn new(parent: c_ulong, focus: c_ulong, widget: &gtk::Widget) -> Option<Self> {
         let xlib = Xlib::open()
             .inspect_err(|error| log::warn!("embedded webview: cannot load Xlib: {error}"))
             .ok()?;
@@ -143,7 +153,6 @@ impl Host {
         // SAFETY: `parent` is the live X11 window of the attached Tauri
         // window; the child starts unmapped at 1x1 and is sized on `show`.
         let window = unsafe { (xlib.XCreateSimpleWindow)(display, parent, 0, 0, 1, 1, 0, 0, 0) };
-
         // SAFETY: wraps the X11 window just created, as wry does for its own
         // X11 child webviews.
         let gdk_window = unsafe {
@@ -168,6 +177,12 @@ impl Host {
             container.remove(widget);
         }
         gtk_window.add(widget);
+        // Keys go to this window while the webview has focus: give it the
+        // menu accelerators GTK would otherwise only find on the toplevel.
+        let toplevel = gtk_window_for(x11_display, focus);
+        if let Some(toplevel) = &toplevel {
+            share_accel_groups(toplevel, &gtk_window);
+        }
 
         // X11 sends keys to the focused X window, which stays the Tauri
         // window when the page is clicked: hand focus to the webview's own
@@ -177,12 +192,20 @@ impl Host {
         let alive = Rc::new(Cell::new(true));
         widget.connect_button_press_event({
             let (focused, alive) = (focused.clone(), alive.clone());
+            let toplevel = toplevel.as_ref().map(|toplevel| toplevel.downgrade());
+            let host = gtk_window.downgrade();
             move |_, _| {
                 // The widget can outlive the host when it moves to another.
                 // On every click: the window manager or Tauri may have moved
                 // focus back to the GPUI window since the last one.
                 if alive.get() {
                     focused.set(true);
+                    // The window's menu may have changed since.
+                    if let (Some(toplevel), Some(host)) =
+                        (toplevel.as_ref().and_then(|t| t.upgrade()), host.upgrade())
+                    {
+                        share_accel_groups(&toplevel, &host);
+                    }
                     // SAFETY: `alive` says the host, and its window, exist.
                     unsafe { set_input_focus(display, window, RevertToParent, CurrentTime) };
                 }
@@ -195,6 +218,7 @@ impl Host {
             display,
             window,
             parent,
+            focus,
             gtk_window,
             widget: widget.clone(),
             shown: Cell::new(None),
@@ -234,15 +258,117 @@ impl Host {
         if self.shown.take().is_none() {
             return;
         }
-        // An unmapped window that had keyboard focus reverts it to GPUI.
-        self.focused.set(false);
+        self.release_focus();
         // SAFETY: `self.window` is alive until `Host` drops.
         unsafe { (self.xlib.XUnmapWindow)(self.display, self.window) };
         self.flush();
     }
 
+    /// Before the window goes away: gives keyboard focus back to GPUI if the
+    /// webview has it. X11 would revert it to the parent, which below a menu
+    /// bar is not the toplevel GTK reads keys from.
+    fn release_focus(&self) {
+        let mut window = 0;
+        let mut revert = 0;
+        // SAFETY: plain out parameters on GDK's display.
+        unsafe { (self.xlib.XGetInputFocus)(self.display, &mut window, &mut revert) };
+        // Not when the user has moved on to another window since.
+        self.focused.set(window == self.window);
+        self.return_focus();
+    }
+
+    /// Moves keyboard focus into the webview, like the click handler in `new`.
+    fn take_focus(&self) {
+        self.focused.set(true);
+        if let Some(toplevel) = gtk_window_for(&self.gdk_display, self.focus) {
+            share_accel_groups(&toplevel, &self.gtk_window);
+        }
+        // With the pointer outside the webview, X sends keys to the focused
+        // window itself rather than to the webview's window under the
+        // pointer; GDK only selects them on that window if asked to.
+        if let Some(window) = self.gtk_window.window() {
+            window.set_events(
+                window.events()
+                    | gtk::gdk::EventMask::KEY_PRESS_MASK
+                    | gtk::gdk::EventMask::KEY_RELEASE_MASK
+                    | gtk::gdk::EventMask::FOCUS_CHANGE_MASK,
+            );
+        }
+        // SAFETY: the host is shown, so its window exists and is mapped.
+        unsafe {
+            (self.xlib.XSetInputFocus)(self.display, self.window, RevertToParent, CurrentTime)
+        };
+        // A click would also activate the host GTK window; without that
+        // WebKit ignores the keys X now sends it.
+        send_focus_in(&self.gtk_window);
+        self.widget.grab_focus();
+        self.flush();
+    }
+
+    /// Gives keyboard focus back to GPUI after the webview took it.
+    fn return_focus(&self) {
+        if self.focused.replace(false) {
+            // SAFETY: both windows are alive while the host is.
+            unsafe {
+                (self.xlib.XSetInputFocus)(self.display, self.focus, RevertToParent, CurrentTime)
+            };
+        }
+    }
+
     fn flush(&self) {
         // SAFETY: the display is GDK's, open for the life of the process.
         unsafe { (self.xlib.XFlush)(self.display) };
+    }
+}
+
+/// Tells a GTK window it has keyboard focus, as GDK does on an X11 FocusIn.
+fn send_focus_in(window: &gtk::Window) {
+    let Some(gdk_window) = window.window() else {
+        return;
+    };
+    let mut event = gtk::gdk::Event::new(gtk::gdk::EventType::FocusChange);
+    // SAFETY: a freshly allocated focus-change event; GDK frees the window
+    // reference with the event.
+    unsafe {
+        let raw =
+            gtk::glib::translate::ToGlibPtrMut::<*mut gtk::gdk::ffi::GdkEvent>::to_glib_none_mut(
+                &mut event,
+            )
+            .0 as *mut gtk::gdk::ffi::GdkEventFocus;
+        (*raw).in_ = 1;
+        (*raw).window = gtk::glib::translate::IntoGlibPtr::into_glib_ptr(gdk_window);
+    }
+    window.send_focus_change(&event);
+}
+
+/// The GTK window that owns X11 window `xid`.
+fn gtk_window_for(display: &X11Display, xid: c_ulong) -> Option<gtk::Window> {
+    let window = gdkx11::X11Window::lookup_for_display(display, xid)?;
+    let mut widget = std::ptr::null_mut();
+    // SAFETY: a live GdkWindow; GTK sets its user data to the owning widget.
+    unsafe {
+        gtk::gdk::ffi::gdk_window_get_user_data(
+            window.upcast_ref::<gtk::gdk::Window>().to_glib_none().0,
+            &mut widget,
+        )
+    };
+    if widget.is_null() {
+        return None;
+    }
+    // SAFETY: non-null user data of a GTK-owned window is a GtkWidget.
+    let widget: gtk::Widget = unsafe { from_glib_none(widget.cast::<gtk::ffi::GtkWidget>()) };
+    widget.downcast().ok()
+}
+
+/// Attaches `toplevel`'s accelerator groups (Tauri's menu accelerators) to
+/// `host`, and detaches the ones `toplevel` no longer has.
+fn share_accel_groups(toplevel: &gtk::Window, host: &gtk::Window) {
+    let wanted = gtk::accel_groups_from_object(toplevel);
+    let attached = gtk::accel_groups_from_object(host);
+    for group in attached.iter().filter(|group| !wanted.contains(group)) {
+        host.remove_accel_group(group);
+    }
+    for group in wanted.iter().filter(|group| !attached.contains(group)) {
+        host.add_accel_group(group);
     }
 }

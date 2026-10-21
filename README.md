@@ -101,6 +101,12 @@ TAO reports only the text an input method commits, and Tauri keeps TAO's window 
 
 GTK chooses the input method as usual (`GTK_IM_MODULE`, then the desktop's setting). Without a focused GPUI text input, keys go straight to TAO.
 
+### Native menus
+
+GPUI's own menu API (`cx.set_menus`) is unsupported; give the window a Tauri menu (`app.set_menu`, `window.set_menu` or `WindowBuilder::menu`) instead. On macOS the menu is global and on Windows it sits in the non-client area, so GPUI's content is unaffected.
+
+On Linux, Tauri packs a GTK menu bar into the window's own client area. On X11, GPUI then renders into a `GtkDrawingArea` below the menu bar, with its own native X11 window, instead of into the toplevel window. GPUI's size, mouse positions and `webview_frame` placements start below the menu bar, and `PlatformWindow::resize` adds the menu bar's height back. This also works when the menu is added after `attach_gpui`: the surface moves into the drawing area then. Windows without a menu keep rendering into the toplevel window. On Wayland, the menu bar is still covered.
+
 ## Minimal platform adapter: Phase 0 findings
 
 The spike's central question was whether GPUI can render into an existing Tauri/TAO window without forking either project. The answer is yes. The plugin builds on [`gpui-pre`](https://crates.io/crates/gpui-pre) 0.3.8 and `gpui-pre-wgpu`, crates.io snapshots of zed's GPUI and the same crates gpui-kit and gpui-component use, renamed to `gpui`/`gpui_wgpu` in `Cargo.toml`. That GPUI exposes `Platform`, `PlatformWindow`, `PlatformDispatcher`, `Application::with_platform` and `Application::run_embedded`, and `gpui-pre-wgpu` exposes a renderer that accepts raw window handles. The crates.io `gpui` 0.2.x keeps `Platform` crate-private, so it cannot be used.
@@ -118,7 +124,7 @@ Everything else does one of three things:
 - **Delegated to Tauri:** `quit`, `restart`, and the window title, focus, minimize, maximize, fullscreen and resize operations.
 - **Explicitly unsupported:** these return `GpuiError::UnsupportedOperation` through `anyhow`, or are logged at debug level when the GPUI signature has no error channel.
   - Windows: `open_window` outside `attach_gpui`, non-normal window kinds, blurred backgrounds (they render as transparent). For a transparent window, build the Tauri window with `transparent(true)` and attach with `GpuiOptions::default().transparent(true)`; pixels GPUI leaves unpainted then show through where the desktop composites windows.
-  - System integration: credentials, menus and dock menus, path prompts (use `tauri-plugin-dialog`), `open_url` (use `tauri-plugin-opener`), URL schemes, `reveal_path`/`open_with_system`, app hide/unhide, idle-sleep prevention.
+  - System integration: credentials, GPUI menus and dock menus (use a Tauri menu, see [Native menus](#native-menus)), path prompts (use `tauri-plugin-dialog`), `open_url` (use `tauri-plugin-opener`), URL schemes, `reveal_path`/`open_with_system`, app hide/unhide, idle-sleep prevention.
   - Input: IME candidate positioning on macOS.
 - **Handled by GPUI's built-in fallback:** prompts (`PlatformWindow::prompt` returns `None`).
 
@@ -164,12 +170,14 @@ div().flex_1().child(tauri_plugin_gpui::webview_frame(&reports))
 
 - The webview keeps Tauri IPC, so the web screen calls commands and listens to events as before. Shared state lives in Rust; GPUI reads it directly.
 - The webview is shown while its frame is painted and hidden in any frame that leaves it out, so switching GPUI screens needs no bookkeeping.
-- On Linux the webview is moved into its own X11 child window so it stacks above GPUI, and keyboard focus moves between the two on click. Wayland is not supported.
+- On Linux the webview is moved into its own X11 child window so it stacks above GPUI, and keyboard focus moves between the two on click. Hiding the webview while it has focus gives focus back to GPUI. Wayland is not supported. `focus_webview` moves focus into a webview from code, for a GPUI control that opens something there to type into.
+- Tauri menu accelerators fire whether GPUI or the webview has keyboard focus. On Linux the webview's X11 window is a GTK window of its own, so the plugin attaches the Tauri window's accelerator groups to it.
 - The webview follows its frame through cached views (`AnyView::cached`), which reuse the previous frame without running the element again.
 - Render each webview in at most one frame. A webview created to replace a closed one needs a new label, because frames track webviews by label.
-- Limits: the webview always draws above GPUI, so GPUI popovers, menus and tooltips that overlap it are hidden; clipping by scrolling ancestors is rectangular. Desktop only; Tauri child webviews are not available on mobile.
+- Limits: the webview always draws above GPUI, so GPUI popovers, menus and tooltips that overlap it are hidden; clipping by scrolling ancestors is rectangular. GPUI keeps the hover state it had when the pointer moves straight from a GPUI element into the webview. Desktop only; Tauri child webviews are not available on mobile.
 - Run it with `cargo run -p embedded-webview`. Verified on Linux (X11); macOS and Windows use Tauri's native child views and are untested.
-- `examples/embedded-webview/scripts/chaos.sh` stresses it on a virtual X display (rapid screen switches, re-renders around a cached view, resizes, maximize, webview replacement, teardown while shown) and checks every screenshot's pixels. On Linux, GTK logs `_gdk_frame_clock_*` criticals and a `gdk_window_set_user_time` warning when a webview's X11 window is created; they are harmless.
+- The example has a Tauri menu (View > Overview, Ctrl+1; Reports, Ctrl+2). `EMBEDDED_WEBVIEW_MENU=late` adds it after GPUI is attached and `=none` leaves it out.
+- `examples/embedded-webview/scripts/chaos.sh` stresses it on a virtual X display (rapid screen switches, re-renders around a cached view, resizes, maximize, webview replacement, teardown while shown) and checks every screenshot's pixels. It runs three times: with the menu, with the menu added late, and without one. With a menu it also checks that the menu bar is visible above GPUI, that a click opens the View menu and its item works, that the accelerators fire with GPUI focused and with the webview focused, and that clicks reach GPUI below the menu bar. On Linux, GTK logs `_gdk_frame_clock_*` criticals and a `gdk_window_set_user_time` warning when a webview's X11 window is created; they are harmless.
 
 ## Platform status
 

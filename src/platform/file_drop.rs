@@ -277,7 +277,7 @@ pub(crate) mod gtk {
         let Some(inner) = inner.upgrade() else { return };
         // Toplevel coordinates in logical pixels, like TAO's cursor events.
         let _ = widget;
-        let position = point(px(x as f32), px(y as f32)) - inner.content_origin();
+        let position = point(px(x as f32), px(y as f32)) - inner.toplevel_content_origin();
         queue(&inner, step, Some(position));
     }
 

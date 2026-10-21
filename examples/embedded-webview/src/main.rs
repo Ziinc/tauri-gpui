@@ -7,8 +7,14 @@
 //! * Both sides share one counter that lives in Rust. The web screen reaches
 //!   it through Tauri commands and events; GPUI reads it directly.
 //!
+//! * A native Tauri menu (View > Overview / Reports, Ctrl+1 / Ctrl+2)
+//!   switches screens. On Linux it is a GTK menu bar above the GPUI content,
+//!   and its accelerators work whether GPUI or the web screen has focus.
+//!
 //! Set `EMBEDDED_WEBVIEW_CHAOS=<dir>` to run the stress scenario in
 //! `chaos.rs` instead (Linux/X11; see `scripts/chaos.sh`).
+//! `EMBEDDED_WEBVIEW_MENU=none` leaves the menu out and `=late` adds it
+//! after GPUI is attached.
 
 mod chaos;
 
@@ -20,6 +26,7 @@ use std::sync::{
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, Webview, WebviewBuilder,
     WebviewUrl, Wry,
+    menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
 };
 use tauri_plugin_gpui::{
     GpuiWindowExt,
@@ -260,12 +267,61 @@ fn add_reports(app: &AppHandle, window: &tauri::Window<Wry>) -> tauri::Result<()
     Ok(())
 }
 
+/// When the menu is added, from `EMBEDDED_WEBVIEW_MENU`.
+#[derive(Clone, Copy, PartialEq)]
+enum MenuMode {
+    None,
+    /// Set as the app menu, so the window is built with it.
+    AtBuild,
+    /// Set on the window after GPUI is attached.
+    Late,
+}
+
+impl MenuMode {
+    fn from_env() -> Self {
+        match std::env::var("EMBEDDED_WEBVIEW_MENU").as_deref() {
+            Ok("none") => Self::None,
+            Ok("late") => Self::Late,
+            _ => Self::AtBuild,
+        }
+    }
+}
+
+fn menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    let overview = MenuItemBuilder::with_id("overview", "Overview")
+        .accelerator("CmdOrCtrl+1")
+        .build(app)?;
+    let reports = MenuItemBuilder::with_id("reports", "Reports")
+        .accelerator("CmdOrCtrl+2")
+        .build(app)?;
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&overview)
+        .item(&reports)
+        .build()?;
+    MenuBuilder::new(app).item(&view).build()
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Counter::default())
         .invoke_handler(tauri::generate_handler![count, increment, show_overview])
+        .on_menu_event(|app, event| {
+            let screen = match event.id().as_ref() {
+                "overview" => Screen::Overview,
+                "reports" => Screen::Reports,
+                _ => return,
+            };
+            update_shell(app, move |shell, cx| {
+                shell.screen = screen;
+                cx.notify();
+            });
+        })
         .setup(|app| {
             tauri_plugin_gpui::init(app)?;
+            let menu_mode = MenuMode::from_env();
+            if menu_mode == MenuMode::AtBuild {
+                app.set_menu(menu(app.handle())?)?;
+            }
             let handle = app.handle().clone();
             let counter = app.state::<Counter>().inner().clone();
             let window = tauri::WindowBuilder::new(app, "main")
@@ -284,8 +340,15 @@ fn main() {
                 shell
             })?;
             add_reports(app.handle(), &window)?;
+            if menu_mode == MenuMode::Late {
+                window.set_menu(menu(app.handle())?)?;
+            }
             if let Some(dir) = std::env::var_os("EMBEDDED_WEBVIEW_CHAOS") {
-                chaos::spawn(app.handle().clone(), dir.into());
+                chaos::spawn(
+                    app.handle().clone(),
+                    dir.into(),
+                    menu_mode != MenuMode::None,
+                );
             }
             Ok(())
         })

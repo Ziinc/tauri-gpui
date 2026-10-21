@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Runs the embedded-webview stress scenario (`src/chaos.rs`) on a virtual X
-# display and checks every screenshot (`check.py`). Requires: Xvfb, openbox,
-# xdotool, ImageMagick (`import`), Python 3 with Pillow and a Vulkan driver.
+# display and checks every screenshot (`check.py`), once per menu setup: the
+# window built with a menu, the menu added after GPUI is attached, and no
+# menu. Requires: Xvfb, openbox, xdotool, ImageMagick (`import`), Python 3
+# with Pillow and a Vulkan driver.
 #
 # Usage: examples/embedded-webview/scripts/chaos.sh [output-dir]
 set -euo pipefail
@@ -26,16 +28,22 @@ sleep 1
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 export DBUS_SESSION_BUS_ADDRESS=disabled:
 export RUST_LOG="${RUST_LOG:-warn}"
-set +e
-EMBEDDED_WEBVIEW_CHAOS="$OUT" timeout 300 "$ROOT/target/debug/embedded-webview" 2>"$OUT/app.log"
-STATUS=$?
-set -e
-if [ $STATUS -ne 0 ]; then
-  echo "embedded-webview exited with $STATUS (see $OUT/app.log)"
-  exit 1
-fi
-if grep -q "X Window System error" "$OUT/app.log"; then
-  echo "X11 error in $OUT/app.log"
-  exit 1
-fi
-python3 "$(dirname "$0")/check.py" "$OUT"
+for MENU in at-build late none; do
+  echo "== menu: $MENU"
+  DIR="$OUT/menu-$MENU"
+  mkdir -p "$DIR"
+  set +e
+  EMBEDDED_WEBVIEW_MENU="$MENU" EMBEDDED_WEBVIEW_CHAOS="$DIR" timeout 300 \
+    "$ROOT/target/debug/embedded-webview" 2>"$DIR/app.log"
+  STATUS=$?
+  set -e
+  if [ $STATUS -ne 0 ]; then
+    echo "embedded-webview exited with $STATUS (see $DIR/app.log)"
+    exit 1
+  fi
+  if grep -q "X Window System error" "$DIR/app.log"; then
+    echo "X11 error in $DIR/app.log"
+    exit 1
+  fi
+  python3 "$(dirname "$0")/check.py" "$DIR"
+done
