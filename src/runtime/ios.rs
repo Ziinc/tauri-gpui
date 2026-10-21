@@ -12,7 +12,6 @@ use gpui::{
     AppLifecyclePhase, Edges, KeyDownEvent, KeyUpEvent, PlatformInput, PlatformInputHandler,
     PlatformTextSystem, TouchPhase, WindowAppearance, WindowInsets, px,
 };
-use gpui_wgpu::{WgpuContext, wgpu};
 use raw_window_handle::RawWindowHandle;
 use tauri::Wry;
 use tauri_runtime_wry::tao::event::{TouchPhase as TaoTouchPhase, WindowEvent};
@@ -22,7 +21,7 @@ use crate::{
     GpuiError, GpuiOptions,
     events::mobile,
     ios::{ViewEvent, keys::HardwareKey, text::TextEdit},
-    platform::window::{RawWindow, WindowInner},
+    platform::window::WindowInner,
 };
 
 #[derive(Default)]
@@ -115,39 +114,6 @@ impl Runtime {
             crate::ios::uninstall();
         }
         result
-    }
-
-    /// `gpui_wgpu` only creates Vulkan and GL instances, neither of which
-    /// exists on iOS. The renderer reuses the shared context's instance when
-    /// there is one, so create that context on Metal first, probing the
-    /// adapter with a detached `CAMetalLayer` rather than TAO's view (each
-    /// surface on a view leaves a sublayer behind).
-    fn seed_metal_context(&self, raw: RawWindow) -> Result<(), GpuiError> {
-        if self.platform.gpu_context.borrow().is_some() {
-            return Ok(());
-        }
-        let init = |e: String| GpuiError::RendererInitialization(e);
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL,
-            flags: wgpu::InstanceFlags::default(),
-            backend_options: wgpu::BackendOptions::default(),
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            // The renderer creates its surface without a display handle.
-            display: Some(Box::new(raw)),
-        });
-        let layer = crate::ios::metal_layer().ok_or_else(|| init("no CAMetalLayer".into()))?;
-        // SAFETY: `layer` is a live CAMetalLayer and outlives the surface.
-        let surface = unsafe {
-            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(
-                objc2::rc::Retained::as_ptr(&layer) as *mut std::ffi::c_void,
-            ))
-        }
-        .map_err(|e| init(format!("Failed to create Metal surface: {e}")))?;
-        let context =
-            WgpuContext::new(instance, &surface, None).map_err(|e| init(format!("{e:#}")))?;
-        drop(surface);
-        *self.platform.gpu_context.borrow_mut() = Some(context);
-        Ok(())
     }
 
     fn attached(&self) -> Option<Rc<WindowInner>> {
