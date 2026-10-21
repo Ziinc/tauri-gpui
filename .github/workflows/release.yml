@@ -1,0 +1,97 @@
+name: Release
+
+# Pushing a `vX.Y.Z` tag publishes tauri-plugin-gpui to crates.io and creates
+# a GitHub release for the tag with generated notes. The tag must match the
+# crate version and point at a commit on main. Re-running is safe: a version
+# already on crates.io is skipped, and an existing release is left as is.
+#
+# Publishing uses crates.io trusted publishing (no long-lived token): the
+# crate's trusted publisher must name this repository and `release.yml`.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the tag
+        id: version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "tauri-plugin-gpui") | .version')
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the crate version $version"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME is not on main"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check crates.io
+        id: crates
+        run: |
+          if curl -sf -o /dev/null -A "tauri-plugin-gpui-release (https://github.com/${GITHUB_REPOSITORY})" \
+            "https://crates.io/api/v1/crates/tauri-plugin-gpui/${{ steps.version.outputs.version }}"; then
+            echo "tauri-plugin-gpui ${{ steps.version.outputs.version }} is already on crates.io; skipping"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # `cargo publish` builds the crate before uploading it, which links
+      # Tauri's WebKitGTK backend and GPUI's Linux platform.
+      - name: System dependencies
+        if: steps.crates.outputs.published != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev \
+            libssl-dev libxkbcommon-dev libxkbcommon-x11-dev libvulkan-dev \
+            libwayland-dev libx11-xcb-dev libfontconfig-dev libfreetype-dev \
+            libgbm-dev libegl-dev libxrandr-dev clang
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.crates.outputs.published != 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.crates.outputs.published != 'true'
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        if: steps.crates.outputs.published != 'true'
+        id: auth
+      - name: Publish to crates.io
+        if: steps.crates.outputs.published != 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p tauri-plugin-gpui --locked
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists; skipping"
+            exit 0
+          fi
+          args=(--verify-tag --generate-notes --title "$GITHUB_REF_NAME")
+          # Notes cover the changes since the previous version tag.
+          if previous=$(git describe --tags --abbrev=0 --match 'v*.*.*' "$GITHUB_REF_NAME^" 2>/dev/null); then
+            args+=(--notes-start-tag "$previous")
+          fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}"
