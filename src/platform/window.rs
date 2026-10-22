@@ -970,6 +970,12 @@ impl PlatformWindow for TauriGpuiWindow {
         }
     }
 
+    fn get_title(&self) -> String {
+        // The toplevel's title: on X11 GPUI may draw into a child window
+        // below the menu bar, which has none.
+        self.inner.tauri_window.title().unwrap_or_default()
+    }
+
     fn set_title(&mut self, title: &str) {
         let window = self.inner.tauri_window.clone();
         let title = title.to_owned();
