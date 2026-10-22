@@ -21,7 +21,7 @@ use std::{
 
 use gpui::{
     AnyWindowHandle, App, Application, ApplicationHandle, AsyncApp, Bounds, QuitMode,
-    TitlebarOptions, WindowBounds, WindowOptions,
+    TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions,
 };
 #[cfg(not(gpui_android))]
 use gpui::{point, px};
@@ -478,6 +478,13 @@ impl Runtime {
             }),
             focus: options.focus,
             show: false,
+            // GPUI applies this when it opens the window; the default,
+            // `Opaque`, would undo `GpuiOptions::transparent`.
+            window_background: if options.transparent {
+                WindowBackgroundAppearance::Transparent
+            } else {
+                WindowBackgroundAppearance::Opaque
+            },
             ..Default::default()
         };
         let mount = Mount {
