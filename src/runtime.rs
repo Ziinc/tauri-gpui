@@ -21,7 +21,7 @@ use std::{
 
 use gpui::{
     AnyWindowHandle, App, Application, ApplicationHandle, AsyncApp, Bounds, QuitMode,
-    TitlebarOptions, WindowBounds, WindowOptions,
+    TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions,
 };
 #[cfg(not(gpui_android))]
 use gpui::{point, px};
@@ -466,20 +466,11 @@ impl Runtime {
         inner.reported_visible.set(inner.state.borrow().visible);
         self.surfaces.borrow_mut().insert(label, inner.clone());
 
-        let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                origin,
-                logical(physical_size, scale_factor),
-            ))),
-            // GPUI only reads the title, as the accessible name of the window.
-            titlebar: Some(TitlebarOptions {
-                title: window.title().ok().map(Into::into),
-                ..Default::default()
-            }),
-            focus: options.focus,
-            show: false,
-            ..Default::default()
-        };
+        let window_options = window_options(
+            &options,
+            Bounds::new(origin, logical(physical_size, scale_factor)),
+            window.title().ok(),
+        );
         let mount = Mount {
             inner,
             options: window_options,
@@ -831,5 +822,54 @@ impl Runtime {
 
     pub(crate) fn is_attached(&self, label: &str) -> bool {
         self.surfaces.borrow().contains_key(label)
+    }
+}
+
+/// The options GPUI opens an attached window with.
+fn window_options(
+    options: &GpuiOptions,
+    bounds: Bounds<gpui::Pixels>,
+    title: Option<String>,
+) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        // GPUI only reads the title, as the accessible name of the window.
+        titlebar: Some(TitlebarOptions {
+            title: title.map(Into::into),
+            ..Default::default()
+        }),
+        focus: options.focus,
+        show: false,
+        // GPUI applies this when it opens the window; the default,
+        // `Opaque`, would undo `GpuiOptions::transparent`.
+        window_background: if options.transparent {
+            WindowBackgroundAppearance::Transparent
+        } else {
+            WindowBackgroundAppearance::Opaque
+        },
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Bounds, WindowBackgroundAppearance};
+
+    use super::window_options;
+    use crate::GpuiOptions;
+
+    #[test]
+    fn opens_transparent_windows_with_a_transparent_background() {
+        let background = |options: GpuiOptions| {
+            window_options(&options, Bounds::default(), None).window_background
+        };
+        assert_eq!(
+            background(GpuiOptions::default().transparent(true)),
+            WindowBackgroundAppearance::Transparent
+        );
+        assert_eq!(
+            background(GpuiOptions::default()),
+            WindowBackgroundAppearance::Opaque
+        );
     }
 }
