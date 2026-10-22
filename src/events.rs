@@ -107,6 +107,8 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
                 pressed_button,
                 modifiers,
             }));
+            #[cfg(not(gpui_mobile))]
+            inner.pointer_moved(pressed_button);
         }
         WindowEvent::MouseInput { state, button, .. } => {
             let Some(button) = mouse_button(*button, Os::CURRENT) else {
@@ -120,13 +122,19 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
                 ElementState::Pressed => {
                     inner.state.borrow_mut().pressed_button = Some(button);
                     let click_count = inner.register_click(button, position);
-                    inner.handle_input(PlatformInput::MouseDown(MouseDownEvent {
+                    let handled = inner.handle_input(PlatformInput::MouseDown(MouseDownEvent {
                         button,
                         position,
                         modifiers,
                         click_count,
                         first_mouse: false,
                     }));
+                    #[cfg(not(gpui_mobile))]
+                    if button == MouseButton::Left && !handled {
+                        inner.window_control_pressed(click_count);
+                    }
+                    #[cfg(gpui_mobile)]
+                    let _ = handled;
                 }
                 ElementState::Released => {
                     let click_count = {
@@ -134,12 +142,18 @@ pub(crate) fn dispatch(inner: &WindowInner, event: &WindowEvent<'_>) -> bool {
                         window_state.pressed_button = None;
                         window_state.click.count.max(1)
                     };
-                    inner.handle_input(PlatformInput::MouseUp(MouseUpEvent {
+                    let handled = inner.handle_input(PlatformInput::MouseUp(MouseUpEvent {
                         button,
                         position,
                         modifiers,
                         click_count,
                     }));
+                    #[cfg(not(gpui_mobile))]
+                    if button == MouseButton::Left && !handled {
+                        inner.window_control_released();
+                    }
+                    #[cfg(gpui_mobile)]
+                    let _ = handled;
                 }
                 _ => {}
             }

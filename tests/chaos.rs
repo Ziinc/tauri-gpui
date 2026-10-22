@@ -33,9 +33,13 @@ use tauri_plugin_gpui::{
         self, App, AppContext as _, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
         EntityInputHandler, ExternalPaths, FocusHandle, Global, InteractiveElement as _,
         IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Pixels, Render, Styled as _,
-        UTF16Selection, WeakEntity, Window, WindowAppearance, canvas, div,
+        UTF16Selection, WeakEntity, Window, WindowAppearance, WindowControlArea, canvas, div,
+        prelude::FluentBuilder as _, px,
     },
 };
+
+/// Height of the probe's title-bar strip (see `Probe::drag_bar`).
+const DRAG_BAR_HEIGHT: f32 = 40.;
 
 // ---------------------------------------------------------------------------
 // GPUI probe view
@@ -64,6 +68,8 @@ struct Probe {
     marked: Option<String>,
     /// Every composition GPUI was handed, in order.
     marks: Vec<String>,
+    /// Draws a title-bar strip (`WindowControlArea::Drag`) across the top.
+    drag_bar: bool,
     _visibility: gpui::Subscription,
 }
 
@@ -93,6 +99,7 @@ impl Probe {
             drag_moves: 0,
             marked: None,
             marks: Vec::new(),
+            drag_bar: false,
             _visibility: visibility,
         }
     }
@@ -135,6 +142,15 @@ impl Render for Probe {
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, _| {
                 this.dropped.extend(paths.paths().iter().cloned());
             }))
+            .when(self.drag_bar, |this| {
+                this.child(
+                    div()
+                        .id("drag-bar")
+                        .h(px(DRAG_BAR_HEIGHT))
+                        .w_full()
+                        .window_control_area(WindowControlArea::Drag),
+                )
+            })
             .child(format!("renders: {} text: {}", self.renders, self.text))
             .child(
                 canvas(
@@ -1865,6 +1881,76 @@ fn minimize(h: &mut Harness) {
     h.window_gone(&label);
 }
 
+/// A title-bar strip drawn by GPUI (`window_control_area(Drag)`) acts as a
+/// native one: double-clicking it maximizes the window and again restores it.
+fn title_bar(h: &mut Harness) {
+    if !h.has_wm || xdotool(&["version"]).is_err() {
+        h.check(
+            "title bar",
+            true,
+            "skipped: needs xdotool and a window manager",
+        );
+        return;
+    }
+    let label = h.open_probe("title-bar", (400., 300.));
+    h.rendered(&label);
+    let l = label.clone();
+    h.gpui(move |cx| {
+        if let Some(probe) = probe(cx, &l) {
+            probe.update(cx, |probe, cx| {
+                probe.drag_bar = true;
+                cx.notify();
+            });
+        }
+    });
+    h.refresh(&label);
+    let Some(xid) = h.xid(&label) else {
+        h.check("title-bar window found by xdotool", false, "");
+        return;
+    };
+    xdotool(&["windowactivate", "--sync", &xid]).ok();
+    thread::sleep(Duration::from_millis(300));
+    let y = (DRAG_BAR_HEIGHT / 2.).to_string();
+    for (maximize, name) in [
+        (
+            true,
+            "double-clicking a GPUI drag area maximizes the window",
+        ),
+        (false, "double-clicking it again restores the window"),
+    ] {
+        xdotool(&["mousemove", "--window", &xid, "200", &y]).ok();
+        xdotool(&["click", "--repeat", "2", "--delay", "80", "1"]).ok();
+        let l = label.clone();
+        let done = h.wait(Duration::from_secs(3), |h| {
+            let l = l.clone();
+            h.main(move |app| app.get_window(&l).unwrap().is_maximized().unwrap()) == maximize
+        });
+        h.check(name, done, "");
+        // Past the double-click interval, so the next pair counts afresh.
+        thread::sleep(Duration::from_millis(600));
+    }
+
+    // Pressing and dragging it moves the window.
+    let l = label.clone();
+    let before = h.main(move |app| app.get_window(&l).unwrap().outer_position().unwrap());
+    xdotool(&["mousemove", "--window", &xid, "200", &y]).ok();
+    xdotool(&["mousedown", "1"]).ok();
+    for step in 1..=10 {
+        let x = (200 + step * 15).to_string();
+        xdotool(&["mousemove", "--window", &xid, &x, &y]).ok();
+        thread::sleep(Duration::from_millis(30));
+    }
+    xdotool(&["mouseup", "1"]).ok();
+    let l = label.clone();
+    let moved = h.wait(Duration::from_secs(3), |h| {
+        let l = l.clone();
+        h.main(move |app| app.get_window(&l).unwrap().outer_position().unwrap()) != before
+    });
+    h.check("dragging a GPUI drag area moves the window", moved, "");
+    h.close(&label);
+    h.window_gone(&label);
+}
+
 /// GPUI sees the live monitor layout, and window appearance matches Tauri.
 fn displays(h: &mut Harness) {
     let label = h.open_probe("display", (300., 200.));
@@ -2447,6 +2533,7 @@ fn run(app: AppHandle<Wry>, seed: u64) {
         ("ime", ime),
         ("hide_show", hide_show),
         ("minimize", minimize),
+        ("title_bar", title_bar),
         ("displays", displays),
         ("capture", capture),
         ("many_windows", many_windows),
