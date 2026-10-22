@@ -336,6 +336,13 @@ scripts/chaos-test.sh --wayland
 
 Without a display, `cargo test` skips the suite.
 
+## Releasing
+
+1. Bump `version` in `Cargo.toml`, run `cargo check` to update `Cargo.lock`, and merge to `main`.
+2. Tag the merge commit and push the tag: `git tag v0.2.0 && git push origin v0.2.0`.
+
+`.github/workflows/release.yml` checks that the tag matches the crate version and is on `main`, publishes to crates.io through trusted publishing, and creates a GitHub release with generated notes. Re-running it skips whatever is already done. One-time setup: add this repository with workflow `release.yml` and environment `release` as a trusted publisher in the crate's settings on crates.io.
+
 ## Remaining open questions
 
 - GPUI versioning: the crate tracks the `gpui-pre` snapshots, the same ones gpui-kit tracks, until upstream publishes a `gpui` with a public `Platform`.
