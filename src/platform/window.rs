@@ -134,6 +134,10 @@ pub(crate) struct WindowInner {
     pub reported_visible: Cell<bool>,
     /// The surface renders with an alpha channel.
     pub transparent: Cell<bool>,
+    /// The last frame was not presented (macOS skips windows that are off
+    /// screen), so the window shows an older frame until it draws again.
+    #[cfg(target_os = "macos")]
+    pub unpresented: Cell<bool>,
     /// Kept outside the renderer so GPUI can still ask for it after the
     /// renderer is torn down.
     pub sprite_atlas: Arc<dyn PlatformAtlas>,
@@ -936,7 +940,14 @@ impl PlatformWindow for TauriGpuiWindow {
         let Some(renderer) = state.renderer.as_mut() else {
             return;
         };
-        renderer.draw(scene);
+        // Every surface configure makes the layer opaque again.
+        #[cfg(target_os = "macos")]
+        if self.inner.transparent.get() {
+            super::metal_layer::sync(&self.inner.raw.get());
+        }
+        let _presented = renderer.draw(scene);
+        #[cfg(target_os = "macos")]
+        self.inner.unpresented.set(!_presented);
         #[cfg(not(gpui_mobile))]
         crate::webview::sync(&self.inner);
         if renderer.device_lost() {

@@ -428,6 +428,8 @@ impl Runtime {
             display_dirty: Cell::new(true),
             reported_visible: Cell::new(true),
             transparent: Cell::new(options.transparent),
+            #[cfg(target_os = "macos")]
+            unpresented: Cell::new(false),
             sprite_atlas,
             #[cfg(all(feature = "test-support", not(gpui_mobile)))]
             capture,
@@ -766,6 +768,17 @@ impl Runtime {
                 surface.refresh_window_mode();
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                 self.sync_x11(surface);
+                // A frame skipped while the window was off screen (a popup
+                // resized before it is shown) is drawn once it shows; TAO
+                // has no event for that.
+                #[cfg(target_os = "macos")]
+                if surface.unpresented.get()
+                    && crate::platform::metal_layer::is_on_screen(&surface.raw.get())
+                {
+                    surface.unpresented.set(false);
+                    surface.force_present.set(true);
+                    surface.frame_pending.set(true);
+                }
                 // GPUI is told hidden windows get no frames; keep the request
                 // pending until the window is visible again.
                 if frames_allowed && surface.reported_visible.get() && surface.frame_pending.take()
